@@ -1,0 +1,16 @@
+[package]
+name = "bitbox-e2e-driver"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Standalone: not part of any sibling workspace.
+[workspace]
+
+[dependencies]
+# Path dep so scenarios exercise the sibling checkout (or a PR clone via BITBOX_API_RS override in run.py).
+bitbox-api = { path = "../../bitbox-api-rs", features = ["simulator", "tokio", "multithreaded"] }
+tokio = { version = "1", features = ["rt", "macros", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"

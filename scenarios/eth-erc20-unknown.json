@@ -1,0 +1,18 @@
+{
+  "description": "Legacy ETH tx calling transfer(address,uint256) on a contract that is not in the firmware ERC-20 registry.",
+  "steps": [
+    {
+      "op": "eth-sign",
+      "name": "erc20-transfer-unknown-contract",
+      "chain_id": 1,
+      "keypath": "m/44'/60'/0'/0/0",
+      "nonce": "2367",
+      "gas_price": "3b9aca00",
+      "gas_limit": "fde8",
+      "recipient": "0x9c23d67aea7b95d80942e3836bcdf7e708a747c1",
+      "value": "",
+      "data": "a9059cbb000000000000000000000000e6ce0a092a99700cd4ccccbb1fedc39cf53e63300000000000000000000000000000000000000000000000000de0b6b3a7640000"
+    }
+  ],
+  "name": "eth-erc20-unknown"
+}
