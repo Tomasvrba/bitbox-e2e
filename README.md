@@ -171,3 +171,8 @@ its untracked files cannot leak into the build. Results are cached by commit sha
 ## Gotchas
 
 - App screenshots can differ by hover state alone (the last clicked sidebar item).
+
+## Team showcase
+
+`docs/showcase.html` (self-contained slides) and `docs/showcase.pdf`, built from `docs/showcase.src.html`
+and real screenshots in `docs/assets/` by `docs/build.py --pdf`.

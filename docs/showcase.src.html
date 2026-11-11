@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>BitBox e2e: automatic device and app evidence per PR</title>
+<style>
+  :root {
+    --bg: #121212; --surface: #1a1a19; --surface-2: #232321; --line: #3a3a37;
+    --text: #f0efec; --text-2: #c3c2b7; --muted: #8d8c84;
+    --accent: #3987e5; --good: #2fa36b; --bad: #e66767; --warn: #c98500;
+    --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #0a0a0a; color: var(--text);
+    font: 20px/1.45 Inter, "Segoe UI", system-ui, sans-serif; }
+  .slide { width: 1280px; height: 720px; margin: 24px auto; padding: 56px 72px; position: relative;
+    background: var(--bg); overflow: hidden; display: flex; flex-direction: column; gap: 20px;
+    border: 1px solid #222; }
+  .slide .n { position: absolute; right: 32px; bottom: 22px; color: var(--muted); font-size: 14px; }
+  h1 { font-size: 52px; line-height: 1.1; margin: 0; letter-spacing: -0.02em; }
+  h2 { font-size: 34px; margin: 0; letter-spacing: -0.01em; }
+  .kicker { color: var(--accent); font-size: 15px; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; }
+  p { margin: 0; color: var(--text-2); }
+  .lead { font-size: 24px; color: var(--text-2); max-width: 1000px; }
+  code, .mono { font-family: var(--mono); font-size: 0.85em; }
+  .row { display: flex; gap: 24px; align-items: stretch; }
+  .col { display: flex; flex-direction: column; gap: 12px; flex: 1; min-width: 0; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 19px; }
+  .card p, .card li { font-size: 17px; }
+  ul { margin: 0; padding-left: 22px; color: var(--text-2); }
+  li { margin: 4px 0; }
+  .slide > *, .col > * { flex-shrink: 0; }
+  .lcd { width: 100%; height: auto; image-rendering: pixelated; border-radius: 6px; border: 1px solid var(--line); display: block; }
+  .cap { font-size: 14px; color: var(--muted); margin-top: 6px; }
+  .tag { display: inline-block; font-size: 13px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--line); color: var(--text-2); }
+  .tag.bad { color: var(--bad); border-color: var(--bad); }
+  .tag.good { color: var(--good); border-color: var(--good); }
+  table { border-collapse: collapse; width: 100%; font-size: 17px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .fail { color: var(--bad); font-weight: 600; }
+  .ok { color: var(--text); }
+  pre { margin: 0; font-family: var(--mono); font-size: 15px; line-height: 1.5; background: var(--surface);
+    border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; color: var(--text-2); white-space: pre-wrap; }
+  pre .add { color: #7fd4a3; } pre .del { color: #f19a9a; } pre .c { color: var(--muted); }
+
+  /* pipeline diagram */
+  .flow { display: grid; grid-template-columns: 170px 36px 200px 36px 1fr 36px 190px; align-items: center; row-gap: 14px; }
+  .box { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; font-size: 16px; color: var(--text-2); }
+  .box b { color: var(--text); display: block; font-size: 17px; margin-bottom: 2px; }
+  .box.accent { border-color: var(--accent); }
+  .arrow { color: var(--muted); text-align: center; font-size: 22px; }
+  .lanes { display: flex; flex-direction: column; gap: 12px; }
+
+  /* stat tiles */
+  .stats { display: flex; gap: 18px; }
+  .stat { flex: 1; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; }
+  .stat .v { font-size: 40px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: 15px; color: var(--muted); }
+
+  /* coverage bars: single series, so no legend; values labelled because PDFs have no hover */
+  .viz-root { --series-1: #3987e5; --track: #262624; }
+  .bars { display: grid; grid-template-columns: 250px 1fr 60px; gap: 8px 14px; align-items: center; font-size: 16px; }
+  .bars .lbl { color: var(--text-2); text-align: right; }
+  .bars .lbl small { color: var(--muted); }
+  .bars .track { height: 18px; background: var(--track); border-radius: 0 4px 4px 0; position: relative; }
+  .bars .fill { height: 100%; background: var(--series-1); border-radius: 0 4px 4px 0; }
+  .bars .val { font-variant-numeric: tabular-nums; color: var(--text); }
+  .bars .total .lbl, .bars .total .val { font-weight: 600; color: var(--text); }
+
+  @page { size: 1280px 720px; margin: 0; }
+  @media print {
+    html, body { background: var(--bg); }
+    .slide { margin: 0; border: 0; page-break-after: always; break-after: page; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 1 -->
+<section class="slide" style="justify-content:center">
+  <div class="kicker">bitbox-e2e</div>
+  <h1>Every PR gets an automatic e2e run<br>with device screenshots as evidence</h1>
+  <p class="lead">One command builds the PR's firmware simulator, picks the scenarios that reach the
+    changed code, shows the maintainer exactly which device screens changed, and flags anything that
+    broke in pre-existing vectors and in the api-go / api-rs / api-ts suites. Native, no docker,
+    about 1.5 minutes per PR.</p>
+  <div class="stats" style="margin-top:20px">
+    <div class="stat"><div class="v">89 s</div><div class="l">full PR run, demo commit</div></div>
+    <div class="stat"><div class="v">28</div><div class="l">units auto-selected from 1 changed function</div></div>
+    <div class="stat"><div class="v">10 / 10</div><div class="l">identical graphical runs after flake fixes</div></div>
+    <div class="stat"><div class="v">$0</div><div class="l">API cost; free runners on public repos</div></div>
+  </div>
+  <span class="n">1</span>
+</section>
+
+<!-- 2 -->
+<section class="slide">
+  <div class="kicker">Why</div>
+  <h2>Today, checking a device change is manual</h2>
+  <div class="row" style="flex:1">
+    <div class="col">
+      <div class="card"><h3>Hand testing on the simulator</h3>
+        <p>Someone builds the simulator, clicks through the flow and eyeballs the screens. Nobody
+        sees what the reviewer saw; there is nothing to attach to the PR.</p></div>
+      <div class="card"><h3>Unit tests check strings, not flows</h3>
+        <p>Firmware tests assert <code>Screen::</code> values against a mock UI. They don't render
+        pixels, and they don't run the host API end to end.</p></div>
+    </div>
+    <div class="col">
+      <div class="card"><h3>Cross-repo drift goes unnoticed</h3>
+        <p>Firmware changed the high-fee wording for 9.28.0 and updated its vectors. The copies in
+        api-go, api-rs and api-ts were not updated. Their CI only tests released simulators, so it
+        is green today and will break when 9.28.0 ships.</p>
+        <p style="margin-top:10px"><span class="tag bad">found by this harness</span></p></div>
+      <div class="card"><h3>Prior art</h3>
+        <p>Trezor (<code>--ui=test</code>, fixture hashes, HTML diff report) and Ledger (Speculos +
+        Ragger golden PNGs) both do this. BitBox had the pieces (simulators, vectors) but not the
+        pipeline.</p></div>
+    </div>
+  </div>
+  <span class="n">2</span>
+</section>
+
+<!-- 3 -->
+<section class="slide">
+  <div class="kicker">How it works</div>
+  <h2>One PR run, two lanes</h2>
+  <div class="flow" style="margin-top:8px">
+    <div class="box accent"><b>PR</b>firmware, API or app change</div>
+    <div class="arrow">&rarr;</div>
+    <div class="box"><b>Select</b>coverage map: changed functions &rarr; units that execute them</div>
+    <div class="arrow">&rarr;</div>
+    <div class="lanes">
+      <div class="box"><b>Lane A &middot; evidence</b>run selected units on the head simulator, diff screens
+        against the merge-base <i>baseline bundle</i> (text + LCD pixels)</div>
+      <div class="box"><b>Lane B &middot; regression</b>check every unit with expectations; run api-go / api-rs /
+        api-ts against the head simulator, with their own and the firmware's vectors</div>
+    </div>
+    <div class="arrow">&rarr;</div>
+    <div class="box accent"><b>Report</b>report.html + PR comment: changed screens, failures, unreached code</div>
+  </div>
+  <div class="row" style="margin-top:6px">
+    <div class="card" style="flex:1"><h3>Units</h3>
+      <p>A unit is one scripted host session: a scenario in <code>scenarios/*.json</code> or a firmware
+      BTC vector. Each runs headless (exact screen text) and, when its screens changed, on the
+      graphical simulator (real LCD pixels, driven by touch gestures).</p></div>
+    <div class="card" style="flex:1"><h3>Baseline bundle</h3>
+      <p>Built once per master commit: every unit's screens, frames, API results and the coverage
+      map. PR runs reuse it, so only the head is built and run.</p></div>
+    <div class="card" style="flex:1"><h3>Expectations are optional</h3>
+      <p>Without them, lane A still shows what changed. A maintainer can <code>promote</code> approved
+      screens; from then on they are a regression check.</p></div>
+  </div>
+  <span class="n">3</span>
+</section>
+
+<!-- 4 -->
+<section class="slide">
+  <div class="kicker">Lane A &middot; real commit d5fa70250 "fix high-fee warning wording"</div>
+  <h2>The maintainer sees the changed screen, not a log</h2>
+  <div class="row">
+    <div class="col"><img class="lcd" src="{{fee-base.png}}" alt="base: The fee is 400.0% the send amount."><div class="cap">base b59b48983</div></div>
+    <div class="col"><img class="lcd" src="{{fee-head.png}}" alt="head: Fee is 400.0% of the send amount."><div class="cap">head d5fa70250</div></div>
+    <div class="col"><img class="lcd" src="{{fee-diff.png}}" alt="pixel diff"><div class="cap">changed pixels in red</div></div>
+  </div>
+  <pre><span class="c">btc-vector/taproot-key-spend · step sign · CONFIRM "High fee"   (+27 more vectors, 6 distinct diffs)</span>
+<span class="del">- The fee is 400.0%\nthe send amount.\nProceed?</span>
+<span class="add">+ Fee is 400.0%\nof the send amount.\nProceed?</span></pre>
+  <p>Selection picked the 28 BTC vectors that reach <code>warning_message</code>; nothing changed was left unreached.
+  Graphical runs only for one unit per distinct diff.</p>
+  <span class="n">4</span>
+</section>
+
+<!-- 5 -->
+<section class="slide">
+  <div class="kicker">Lane A &middot; new screens</div>
+  <h2>New flows show up as added frames</h2>
+  <div class="row" style="align-items:flex-start">
+    <div class="col" style="flex:0 0 380px">
+      <img class="lcd" src="{{erc20-new.png}}" alt="new Token contract screen">
+      <div class="cap">added: "Token contract" confirmation for an ERC-20 transfer to an unknown contract</div>
+      <img class="lcd" src="{{erc20-next.png}}" alt="unchanged Unknown token screen" style="opacity:.7">
+      <div class="cap">unchanged: next screen, also present on base</div>
+    </div>
+    <div class="col" style="flex:1">
+      <pre><span class="c">scenario/eth-erc20-unknown · step erc20-transfer</span>
+  CONFIRM  Sign transaction on Ethereum
+<span class="add">+ CONFIRM  Token contract
++          0x 9c23 D67a eA7b 95D8 0942 e383 6BCD f7E7 08a7 47C1</span>
+  CONFIRM TRANSACTION ADDRESS  Unknown token
+           0x E6CE 0a09 2A99 700C ...</pre>
+      <div class="card"><p>The text transcript is authoritative (full addresses, no scrolling);
+      the PNGs are what the user actually sees. Device setup (pairing code, seeding, clock) is kept
+      out of the diff.</p></div>
+    </div>
+  </div>
+  <span class="n">5</span>
+</section>
+
+<!-- 6 -->
+<section class="slide">
+  <div class="kicker">Lane B &middot; regression</div>
+  <h2>The same run flagged real drift in the API repos</h2>
+  <table>
+    <tr><th>suite</th><th>head, repo's own vectors</th><th>head, firmware's vectors</th><th>base (both)</th></tr>
+    <tr><td>api-go</td><td class="num fail">50 pass / 31 fail</td><td class="num ok">81 pass</td><td class="num ok">81 pass</td></tr>
+    <tr><td>api-rs</td><td class="num fail">52 pass / 1 fail</td><td class="num ok">53 pass</td><td class="num ok">53 pass</td></tr>
+    <tr><td>api-ts</td><td class="num fail">25 pass / 1 fail</td><td class="num ok">26 pass</td><td class="num ok">26 pass</td></tr>
+  </table>
+  <div class="row">
+    <div class="card" style="flex:1"><h3>Reading it</h3>
+      <p>The API repos carry copies of <code>btc-transaction-test-vectors.json</code> with the old
+      wording. Against a 9.28.0 simulator their own suites fail; with the firmware's current
+      vectors they pass. Fix: refresh the copies before 9.28.0 is added to their CI.</p></div>
+    <div class="card" style="flex:1"><h3>Expectations</h3>
+      <p>All 28 selected vectors pass the 9.28.0 expectations on head. On the base commit the same
+      28 fail, which is exactly the change under review.</p></div>
+  </div>
+  <span class="n">6</span>
+</section>
+
+<!-- 7 -->
+<section class="slide viz-root">
+  <div class="kicker">Coverage</div>
+  <h2>How much new firmware code do existing suites run?</h2>
+  <p>Executable Rust lines added on master in the last 6 months that are linked into the simulator,
+  and the share run by any existing suite (api-go, api-rs, api-ts, e2e scenarios). Measured with an
+  instrumented simulator.</p>
+  <div class="bars" role="img" aria-label="Share of added lines executed, by area">
+    <div class="lbl">ethereum <small>472 lines</small></div><div class="track"><div class="fill" style="width:88%"></div></div><div class="val">88%</div>
+    <div class="lbl">bitcoin <small>299</small></div><div class="track"><div class="fill" style="width:83%"></div></div><div class="val">83%</div>
+    <div class="lbl">workflows <small>207</small></div><div class="track"><div class="fill" style="width:72%"></div></div><div class="val">72%</div>
+    <div class="lbl">cardano <small>85</small></div><div class="track"><div class="fill" style="width:72%"></div></div><div class="val">72%</div>
+    <div class="lbl">other API: backup, bip85, name <small>317</small></div><div class="track"><div class="fill" style="width:50%"></div></div><div class="val">50%</div>
+    <div class="lbl">other <small>434</small></div><div class="track"><div class="fill" style="width:47%"></div></div><div class="val">47%</div>
+    <div class="lbl">UI glue / HAL <small>192</small></div><div class="track"><div class="fill" style="width:41%"></div></div><div class="val">41%</div>
+    <div class="lbl">keystore / crypto <small>48</small></div><div class="track"><div class="fill" style="width:38%"></div></div><div class="val">38%</div>
+    <div class="total lbl">all <small>2054</small></div><div class="track"><div class="fill" style="width:65%"></div></div><div class="total val">65%</div>
+  </div>
+  <p style="font-size:16px">Each PR report lists the changed functions no unit reaches, so the gaps are visible per change.
+  Biggest today: unlock, device language / i18n, bip85, backup. C UI code is not instrumented.</p>
+  <span class="n">7</span>
+</section>
+
+<!-- 8 -->
+<section class="slide">
+  <div class="kicker">BitBoxApp</div>
+  <h2>App changes: Playwright against the same simulator</h2>
+  <div class="row" style="align-items:flex-start">
+    <div class="col" style="flex:1.4"><img class="lcd" style="image-rendering:auto" src="{{app-portfolio.png}}" alt="BitBoxApp portfolio with simulator device">
+      <div class="cap">watch-only.test.ts, head, Chromium, simulator device connected</div></div>
+    <div class="col">
+      <div class="card"><p><code>e2e.py wallet-compare</code> runs the app's own Playwright tests from clean
+      clones of base and head, with a natively built simulator. The report lists per-test status,
+      errors, device screen diffs and final screenshots that differ.</p></div>
+      <div class="card"><p>Next: masked screenshots at key checkpoints as expectations (Trezor/Ledger
+      style), and a coverage map from V8 + Go coverage so app PRs get selection too.</p></div>
+    </div>
+  </div>
+  <span class="n">8</span>
+</section>
+
+<!-- 9 -->
+<section class="slide">
+  <div class="kicker">Contributor workflow</div>
+  <h2>No expectations to write up front</h2>
+  <div class="row">
+    <div class="col">
+      <div class="card"><h3>1 &middot; Open the PR</h3><p>CI runs <code>e2e.py pr</code> against the merge-base bundle and posts the report.</p></div>
+      <div class="card"><h3>2 &middot; Unreached code?</h3><p>The report lists changed functions no unit reaches. The <code>bitbox-e2e</code>
+        Claude skill drafts a scenario (or a driver op) for them, runs it locally and attaches the evidence.</p></div>
+      <div class="card"><h3>3 &middot; Maintainer reviews screens</h3><p>Approve what the device shows, or ask for changes, from the report.</p></div>
+      <div class="card"><h3>4 &middot; Promote</h3><p><code>e2e.py promote &lt;out&gt; scenario/x</code> writes the approved screens as a version-ranged expectation.</p></div>
+    </div>
+    <div class="col">
+      <pre><span class="c">&lt;!-- e2e   optional PR-body block (planned)
+units: btc-vector/*fee*, scenario/eth-erc20-*
+graphical: btc-vector/*fee*
+api-rs: my-branch   # unreleased API call
+--&gt;</span></pre>
+      <div class="card"><p>Adds to the automatic selection, never replaces it. Useful for showcase screenshots
+        of a new flow, or when the driver needs an unreleased bitbox-api-rs branch.</p></div>
+    </div>
+  </div>
+  <span class="n">9</span>
+</section>
+
+<!-- 10 -->
+<section class="slide">
+  <div class="kicker">Cost</div>
+  <h2>Minutes per PR, no paid APIs</h2>
+  <div class="row">
+    <div class="col">
+      <table>
+        <tr><th>phase (demo PR, 8 cores)</th><th>time</th></tr>
+        <tr><td>baseline bundle (reused)</td><td class="num">0 s</td></tr>
+        <tr><td>head simulator build (cached by sha)</td><td class="num">0 s &middot; ~4 min cold</td></tr>
+        <tr><td>28 units headless, 4 parallel</td><td class="num">12 s</td></tr>
+        <tr><td>6 units graphical</td><td class="num">40 s</td></tr>
+        <tr><td>lane B: 3 API suites &times; 2 vector sets</td><td class="num">37 s</td></tr>
+        <tr><td><b>total</b></td><td class="num"><b>89 s</b></td></tr>
+      </table>
+    </div>
+    <div class="col">
+      <div class="card"><h3>CI</h3><ul>
+        <li>Standard GitHub runners, free on public repos; expect ~2&times; on 4 vCPU</li>
+        <li>No GPU, no hardware: Xvfb + software GL</li>
+        <li>Baseline + coverage map per master merge: ~10–15 min (two simulator builds dominate)</li>
+        <li>Storage: a few MB per bundle; app videos only on failure</li></ul></div>
+      <div class="card"><h3>Not covered</h3><ul>
+        <li>Hardware-only code (~15% of firmware commits): bootloader, BLE, secure chip</li>
+        <li>BitBox03 UI until its graphical simulator is wired in</li></ul></div>
+    </div>
+  </div>
+  <span class="n">10</span>
+</section>
+
+<!-- 11 -->
+<section class="slide">
+  <div class="kicker">Use it</div>
+  <h2>Commands</h2>
+  <pre><span class="c"># once per machine (no root): LLVM, protoc, Rust pin, node, driver</span>
+e2e/setup.sh
+
+<span class="c"># a PR, against its merge-base; WORKTREE = uncommitted firmware checkout</span>
+e2e/e2e.py pr --base bitbox/master --head my-branch --out /tmp/e2e/my-pr
+
+<span class="c"># baseline bundle + coverage map for a master commit (CI does this per merge)</span>
+e2e/e2e.py baseline bitbox/master
+e2e/coverage.py map bitbox/master
+
+<span class="c"># what a diff reaches, and what it doesn't</span>
+e2e/coverage.py select --base bitbox/master --head my-branch --summary
+
+<span class="c"># accept reviewed screens as expectations</span>
+e2e/e2e.py promote /tmp/e2e/my-pr scenario/eth-erc20-unknown
+
+<span class="c"># app change</span>
+e2e/e2e.py wallet-compare --base bitbox/master --head my-branch --firmware bitbox/master \
+  --out /tmp/e2e/app tests/watch-only.test.ts</pre>
+  <span class="n">11</span>
+</section>
+
+<!-- 12 -->
+<section class="slide">
+  <div class="kicker">Status</div>
+  <h2>Prototype works end to end; next is CI</h2>
+  <div class="row">
+    <div class="col"><div class="card"><h3>Done</h3><ul>
+      <li>Native simulator builds, cached by sha</li>
+      <li>Units: scenarios + 37 firmware BTC vectors, optional expectations, promote</li>
+      <li>Baseline bundles, <code>pr</code> with lanes A and B, HTML report</li>
+      <li>Coverage map, selection, unreached-function list</li>
+      <li>Parallel isolated runs; graphical runs deterministic (10/10)</li>
+      <li>App compare via Playwright</li>
+      <li>Claude skill for running it and drafting scenarios</li></ul></div></div>
+    <div class="col"><div class="card"><h3>Next</h3><ul>
+      <li>Reusable GitHub workflow + PR comment; bundles as release assets</li>
+      <li>ETH vector family in firmware, next to the BTC vectors</li>
+      <li>Scenarios for the biggest gaps: unlock, language, bip85, backup</li>
+      <li>Parse the PR-body <code>e2e</code> block; api-rs branch override</li>
+      <li>App: masked checkpoint screenshots, coverage-based selection</li>
+      <li>Refresh the stale vector copies in api-go / api-rs / api-ts</li></ul></div></div>
+  </div>
+  <p>Repo: <code>github.com/Tomasvrba/bitbox-e2e</code> (private for now, move to the org later)</p>
+  <span class="n">12</span>
+</section>
+
+</body>
+</html>
