@@ -28,7 +28,7 @@ A unit is one scenario run. `units.load_units(firmware_dir, scenarios_dir)` retu
 ```
 
 - `scenarios/*.json` units: `expect` comes from an optional `expect` key in the file.
-- BTC vector units come from `<firmware>/testdata/btc-transaction-test-vectors.json`; one unit per
+- BTC vector units come from `<firmware>/src/rust/bitbox-test-vectors/testdata/btc-transaction-test-vectors.json`; one unit per
   vector, `expect` from its version-ranged expectations. The driver op is `btc-sign-psbt`.
 - `expect.check(unit, screens, simulator_version) -> {"status": "pass"|"fail"|"no-expectation", "diff": str}`
   picks the expectation whose version range contains the simulator version.
