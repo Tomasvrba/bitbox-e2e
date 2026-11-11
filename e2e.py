@@ -33,7 +33,8 @@ from pathlib import Path
 E2E_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(E2E_DIR))
 
-DRIVER = E2E_DIR / "driver" / "target" / "release" / "bitbox-e2e-driver"
+# E2E_DRIVER points at a prebuilt driver and skips the cargo build (CI artifacts, parallel runs).
+DRIVER = Path(os.environ.get("E2E_DRIVER", E2E_DIR / "driver" / "target" / "release" / "bitbox-e2e-driver"))
 SIM_PORT = 15423  # simulator-graphical cannot change it, so both views use it, sequentially.
 
 
@@ -42,6 +43,8 @@ def log(msg):
 
 
 def ensure_driver():
+    if "E2E_DRIVER" in os.environ:
+        return
     log("building driver")
     subprocess.run(["cargo", "build", "--release", "-q"], cwd=E2E_DIR / "driver", check=True)
 
