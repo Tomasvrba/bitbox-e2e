@@ -125,6 +125,7 @@ name = "bitbox-e2e-driver"
 version = "0.1.0"
 dependencies = [
  "bitbox-api",
+ "bitcoin",
  "hex",
  "serde",
  "serde_json",

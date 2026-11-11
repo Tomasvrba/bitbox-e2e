@@ -3,8 +3,11 @@
 # requires-python = ">=3.10"
 # dependencies = ["pillow>=10", "python-xlib>=0.33"]
 # ///
-"""BitBox simulator e2e: run a scenario against base/head firmware and report the device diff.
+"""BitBox simulator e2e: run scenarios against base/head firmware and report the device diff.
 
+  e2e.py baseline <ref> [--graphical <glob>...] [-j N]       record the bundle for a firmware commit
+  e2e.py pr --base <ref> --head <ref|WORKTREE> --out <dir> [--graphical <glob>...] [-j N]
+  e2e.py promote <pr-out-dir> <unit-id>...                    head screens become expectations
   e2e.py compare --scenario scenarios/x.json --base <ref> --head <ref|WORKTREE> --out <dir>
   e2e.py device  --scenario scenarios/x.json --sim-dir <dir> --out <dir>/<side>
   e2e.py report  <dir>
@@ -17,6 +20,7 @@ Each side records two views of the same scenario:
 import argparse
 import base64
 import difflib
+import fnmatch
 import html
 import json
 import os
@@ -33,6 +37,9 @@ from pathlib import Path
 E2E_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(E2E_DIR))
 
+import apis  # noqa: E402
+import bundle  # noqa: E402
+
 # E2E_DRIVER points at a prebuilt driver and skips the cargo build (CI artifacts, parallel runs).
 DRIVER = Path(os.environ.get("E2E_DRIVER", E2E_DIR / "driver" / "target" / "release" / "bitbox-e2e-driver"))
 SIM_PORT = 15423  # simulator-graphical cannot change it, so both views use it, sequentially.
@@ -47,6 +54,8 @@ def ensure_driver():
         return
     log("building driver")
     subprocess.run(["cargo", "build", "--release", "-q"], cwd=E2E_DIR / "driver", check=True)
+    # Unit runs in isolated.sh have no network, so they must not build it again.
+    os.environ["E2E_DRIVER"] = str(DRIVER)
 
 
 def wait_port_free(port, timeout_s=30):
@@ -155,7 +164,12 @@ def run_headless(sim_dir, scenario, out):
             parser.feed(line, state["step"])
     drv.wait(10)
     sim.terminate()
-    sim.wait(5)
+    try:
+        sim.wait(5)
+    except subprocess.TimeoutExpired:
+        # Seen under load: the simulator ignoring SIGTERM. The transcript is complete already.
+        sim.kill()
+        sim.wait()
     (out / "combined.log").write_text("\n".join(combined) + "\n")
     (out / "driver.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     screens = parser.screens
@@ -189,8 +203,7 @@ def run_graphical(sim_dir, scenario, out, disp):
             sim.lcd_image().save(out / name)
             frames.append({"file": name, "step": step, "hash": h})
 
-        capture(sim.wait_stable())
-        sim.tap("bottom", 128)  # orientation screen: "Tap this side"
+        sim.choose_orientation()
         capture(sim.wait_stable())
 
         def spawn():
@@ -204,7 +217,7 @@ def run_graphical(sim_dir, scenario, out, disp):
 
         # Policy for an unknown screen once it is stable: tap the top-right control (accept/next),
         # then try the hold-to-confirm gesture. Never touch top-left, which rejects.
-        actions = [lambda: sim.tap("top", 255), lambda: sim.pinch(3.0)]
+        actions = [lambda: sim.tap("top", 255), sim.pinch]
         last, tried = frames[-1]["hash"], 0
         deadline = time.time() + 180
         done = False
@@ -238,6 +251,8 @@ def run_graphical(sim_dir, scenario, out, disp):
                     done = True
             h = sim.wait_stable(settle_s=0.5)
             if h != last:
+                # Give the new screen another settle period before acting: some take input only
+                # after they have been up a while, e.g. the password entry ignores an immediate tap.
                 capture(h)
                 last, tried = h, 0
                 continue
@@ -247,7 +262,7 @@ def run_graphical(sim_dir, scenario, out, disp):
                 actions[tried]()
                 tried += 1
             else:
-                time.sleep(0.5)  # waiting on the host, or nothing we know how to press
+                time.sleep(0.1)  # waiting on the host, or nothing we know how to press
         if drv.poll() is None:
             drv.kill()
         drv.wait(5)
@@ -260,6 +275,15 @@ def run_graphical(sim_dir, scenario, out, disp):
             sim.stop()
         xvfb.stop()
         shutil.rmtree(memdir, ignore_errors=True)
+    # Between two requests of a step the device shows its idle screen for as long as the host
+    # takes, so whether it lasts the settle time is a race. Drop idle screens (anything seen during
+    # setup, and the final screen) inside the scenario; the final frame stays.
+    idle = {f["hash"] for f in frames if f["step"] in SETUP_STEPS} | {frames[-1]["hash"]} if frames else set()
+    for f in frames[:-1]:
+        if f["step"] not in SETUP_STEPS and f["hash"] in idle:
+            (out / f["file"]).unlink()
+    frames = [f for i, f in enumerate(frames)
+              if i == len(frames) - 1 or f["step"] in SETUP_STEPS or f["hash"] not in idle]
     (out / "frames.json").write_text(json.dumps(frames, indent=2))
     (out / "driver.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     log(f"graphical: {len(frames)} frames, driver exit {drv.returncode if drv else None}")
@@ -269,17 +293,32 @@ def run_graphical(sim_dir, scenario, out, disp):
 def cmd_device(args):
     sim_dir, out = Path(args.sim_dir), Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    # The two views may run in separate invocations (pr runs graphical only for changed units),
+    # so keep what an earlier run recorded.
+    prev = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
     meta = {
+        "headless_ok": None, "graphical_ok": None, **prev,
         "label": args.label or out.name,
-        "source": (sim_dir / "source.txt").read_text().strip() if (sim_dir / "source.txt").exists() else "",
-        "simulator_version": (sim_dir / "version.txt").read_text().strip()
-        if (sim_dir / "version.txt").exists() else "",
+        "source": read_text(sim_dir / "source.txt"),
+        "simulator_version": read_text(sim_dir / "version.txt"),
     }
-    meta["headless_ok"] = run_headless(sim_dir, Path(args.scenario), out / "headless")
-    meta["graphical_ok"] = None if args.no_graphical else run_graphical(
-        sim_dir, Path(args.scenario), out / "graphical", os.environ.get("E2E_DISPLAY", ":77"))
+    if not getattr(args, "no_headless", False):
+        meta["headless_ok"] = run_headless(sim_dir, Path(args.scenario), out / "headless")
+    if not args.no_graphical:
+        meta["graphical_ok"] = run_graphical(sim_dir, Path(args.scenario), out / "graphical",
+                                             os.environ.get("E2E_DISPLAY", ":77"))
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     return meta
+
+
+def read_text(p):
+    return p.read_text().strip() if p.exists() else ""
+
+
+def build_sim(ref):
+    log(f"building simulators for {ref}")
+    res = subprocess.run([str(E2E_DIR / "build-sim.sh"), ref], stdout=subprocess.PIPE, text=True, check=True)
+    return Path(res.stdout.strip().splitlines()[-1])
 
 
 def cmd_compare(args):
@@ -290,10 +329,7 @@ def cmd_compare(args):
     out.mkdir(parents=True)
     shutil.copy(args.scenario, out / "scenario.json")
     for side, ref in (("base", args.base), ("head", args.head)):
-        log(f"{side}: building simulators for {ref}")
-        res = subprocess.run([str(E2E_DIR / "build-sim.sh"), ref], stdout=subprocess.PIPE, text=True, check=True)
-        sim_dir = res.stdout.strip().splitlines()[-1]
-        cmd_device(argparse.Namespace(scenario=args.scenario, sim_dir=sim_dir, out=str(out / side),
+        cmd_device(argparse.Namespace(scenario=args.scenario, sim_dir=build_sim(ref), out=str(out / side),
                                       label=f"{side}: {ref}", no_graphical=args.no_graphical))
     report(out)
 
@@ -520,45 +556,53 @@ def report(out):
         md += [f"No change ({len(sb)} screens).", ""]
 
     # Screenshots: show only frames that differ, aligned by content hash.
-    gb, gh = out / "base/graphical", out / "head/graphical"
-    if (gb / "frames.json").exists() and (gh / "frames.json").exists():
-        all_b, all_h = (json.loads((g / "frames.json").read_text()) for g in (gb, gh))
-        fb = [f for f in all_b if f["step"] not in SETUP_STEPS]
-        fh = [f for f in all_h if f["step"] not in SETUP_STEPS]
+    if (out / "base/graphical/frames.json").exists() and (out / "head/graphical/frames.json").exists():
         md += ["## Device screenshots (graphical simulator)", ""]
-        rows = []
-        diffdir = out / "diff"
-        diffdir.mkdir(exist_ok=True)
-        for tag, i1, i2, j1, j2 in frame_ops(fb, fh):
-            if tag == "equal":
-                continue
-            n = max(i2 - i1, j2 - j1)
-            for k in range(n):
-                a = fb[i1 + k] if i1 + k < i2 else None
-                b = fh[j1 + k] if j1 + k < j2 else None
-                d = None
-                if a and b:
-                    d = pixel_diff(gb / a["file"], gh / b["file"], diffdir / f"{a['file'][:-4]}--{b['file']}")
-                rows.append((a, b, d))
-        if not rows:
-            md += [f"No change ({len(fb)} frames).", ""]
-        else:
-            md += ["| step | base | head | changed pixels |", "|---|---|---|---|"]
-            for a, b, d in rows:
-                step = (b or a)["step"]
-                ca = f"![](base/graphical/{a['file']})" if a else "*(absent)*"
-                cb = f"![](head/graphical/{b['file']})" if b else "*(absent)*"
-                cd = f"![]({d.relative_to(out)})" if d else ""
-                md.append(f"| `{step}` | {ca} | {cb} | {cd} |")
-            md += ["", f"{len(rows)} differing frame(s); {len(fb)} base / {len(fh)} head frames total.", ""]
-        for side, frames in (("base", all_b), ("head", all_h)):
-            md += [f"<details><summary>All {side} frames</summary>", ""]
-            md += [" ".join(f"![{f['step']}]({side}/graphical/{f['file']})" for f in frames), "", "</details>", ""]
+        md += frames_md(out, "base/graphical", "head/graphical", "diff")
 
     (out / "report.md").write_text("\n".join(md))
     (out / "report.html").write_text(md_to_html(out, md))
     log(f"report: {out / 'report.md'}")
     print(out / "report.md")
+
+
+def frames_md(out, base_rel, head_rel, diff_rel):
+    """Graphical frames that differ between two runs, aligned by content hash. Paths are relative
+    to `out`, which is where report.md lives. Either side may be missing (new unit, failed run)."""
+    gb, gh = out / base_rel, out / head_rel
+    all_b, all_h = ([] if not (g / "frames.json").exists() else json.loads((g / "frames.json").read_text())
+                    for g in (gb, gh))
+    fb = [f for f in all_b if f["step"] not in SETUP_STEPS]
+    fh = [f for f in all_h if f["step"] not in SETUP_STEPS]
+    md, rows = [], []
+    diffdir = out / diff_rel
+    diffdir.mkdir(parents=True, exist_ok=True)
+    for tag, i1, i2, j1, j2 in frame_ops(fb, fh):
+        if tag == "equal":
+            continue
+        for k in range(max(i2 - i1, j2 - j1)):
+            a = fb[i1 + k] if i1 + k < i2 else None
+            b = fh[j1 + k] if j1 + k < j2 else None
+            d = None
+            if a and b:
+                d = pixel_diff(gb / a["file"], gh / b["file"], diffdir / f"{a['file'][:-4]}--{b['file']}")
+            rows.append((a, b, d))
+    if not rows:
+        md += [f"No change ({len(fb)} frames).", ""]
+    else:
+        md += ["| step | base | head | changed pixels |", "|---|---|---|---|"]
+        for a, b, d in rows:
+            step = (b or a)["step"]
+            ca = f"![]({base_rel}/{a['file']})" if a else "*(absent)*"
+            cb = f"![]({head_rel}/{b['file']})" if b else "*(absent)*"
+            cd = f"![]({d.relative_to(out)})" if d else ""
+            md.append(f"| `{step}` | {ca} | {cb} | {cd} |")
+        md += ["", f"{len(rows)} differing frame(s); {len(fb)} base / {len(fh)} head frames total.", ""]
+    for side, rel, frames in (("base", base_rel, all_b), ("head", head_rel, all_h)):
+        if frames:
+            md += [f"<details><summary>All {side} frames</summary>", ""]
+            md += [" ".join(f"![{f['step']}]({rel}/{f['file']})" for f in frames), "", "</details>", ""]
+    return md
 
 
 def scenario_name(out):
@@ -605,8 +649,17 @@ def md_to_html(out, md):
             t += "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in cells[1:])
             body.append(f"<table>{t}</table>")
             continue
+        if line.startswith("- "):
+            items = []
+            while i < len(md) and md[i].startswith("- "):
+                items.append(f"<li>{inline(md[i][2:])}</li>")
+                i += 1
+            body.append("<ul>" + "".join(items) + "</ul>")
+            continue
         if line.startswith("<"):
             body.append(line if "summary" in line or "details" in line else html.escape(line))
+        elif line.startswith("### "):
+            body.append(f"<h3>{inline(line[4:])}</h3>")
         elif line.startswith("## "):
             body.append(f"<h2>{inline(line[3:])}</h2>")
         elif line.startswith("# "):
@@ -620,6 +673,316 @@ def md_to_html(out, md):
            "pre{background:#f6f8fa;padding:1em;overflow-x:auto}.add{color:#116329;background:#dafbe1}"
            ".del{color:#82071e;background:#ffebe9}.hunk{color:#8250df}")
     return f"<!doctype html><meta charset=utf-8><title>BitBox e2e diff</title><style>{css}</style>\n" + "\n".join(body)
+
+
+# --- baseline / pr --------------------------------------------------------------------------------
+
+def matching(units, globs):
+    return {u["id"] for u in units if any(fnmatch.fnmatchcase(u["id"], g) for g in globs or ())}
+
+
+def load_screens(unit_dir):
+    p = unit_dir / "headless" / "screens.json"
+    return json.loads(p.read_text()) if p.exists() else []
+
+
+def frame_hashes(unit_dir):
+    p = unit_dir / "graphical" / "frames.json"
+    return [f["hash"] for f in json.loads(p.read_text()) if f["step"] not in SETUP_STEPS] if p.exists() else None
+
+
+class Timer:
+    def __init__(self):
+        self.t, self.phases = time.time(), {}
+
+    def done(self, name):
+        now = time.time()
+        self.phases[name] = round(now - self.t)
+        self.t = now
+        log(f"phase {name}: {self.phases[name]}s")
+
+
+def ensure_baseline(sha, jobs, timer=None, force=False):
+    """Bundle for a firmware commit: created on first use (every unit headless + lane B), reused
+    after. Returns (root, manifest, sim_dir, units)."""
+    root = bundle.bundle_dir(sha)
+    sim_dir = build_sim(sha)
+    fw_dir = bundle.firmware_dir(sha)
+    units = bundle.load_units(fw_dir)
+    m = None if force else bundle.read_manifest(root)
+    if m is not None:
+        log(f"reusing baseline {root}")
+        return root, m, sim_dir, units
+    # coverage/ is written by coverage.py map and costs far more to rebuild; keep it.
+    for d in ("units", "apis"):
+        shutil.rmtree(root / d, ignore_errors=True)
+    root.mkdir(parents=True, exist_ok=True)
+    m = {"sha": sha, "simulator_version": read_text(sim_dir / "version.txt"), "harness_sha": bundle.harness_sha(),
+         "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "units": {}}
+    ok = bundle.run_units(sim_dir, units, root, "headless", jobs)
+    m["units"] = {i: {"headless_ok": v, "graphical_ok": None} for i, v in ok.items()}
+    bundle.write_manifest(root, m)
+    timer and timer.done("baseline headless")
+    apis.run(sim_dir, fw_dir / bundle.FW_VECTORS, root / "apis")
+    timer and timer.done("baseline apis")
+    return root, m, sim_dir, units
+
+
+def baseline_graphical(root, m, sim_dir, units, ids, jobs):
+    """Adds graphical runs to the bundle for units that do not have one yet."""
+    todo = [u for u in units if u["id"] in ids and u["id"] in m["units"] and m["units"][u["id"]]["graphical_ok"] is None]
+    if not todo:
+        return
+    for i, v in bundle.run_units(sim_dir, todo, root, "graphical", jobs).items():
+        m["units"][i]["graphical_ok"] = v
+    bundle.write_manifest(root, m)
+
+
+def cmd_baseline(args):
+    ensure_driver()
+    timer = Timer()
+    sha = bundle.resolve(args.ref)
+    root, m, sim_dir, units = ensure_baseline(sha, args.jobs, timer, force=args.force)
+    baseline_graphical(root, m, sim_dir, units, matching(units, args.graphical), args.jobs)
+    timer.done("baseline graphical")
+    ok = sum(bool(u["headless_ok"]) for u in m["units"].values())
+    log(f"baseline {sha[:9]}: {ok}/{len(m['units'])} units ok, timings {timer.phases}")
+    print(root)
+
+
+def select_units(base_sha, head, units):
+    """(unit ids to run, unreached changed functions or None, note for the report)."""
+    try:
+        import coverage
+    except ImportError:
+        coverage = None
+    if coverage is None or not (bundle.bundle_dir(base_sha) / "coverage" / "map.json").exists():
+        return {u["id"] for u in units}, None, "all (no coverage map)"
+    r = coverage.select(base_sha, head)
+    note = f"coverage, {r['changed_functions']} changed functions"
+    return set(r["units"]), [f"{u['file']}:{u['lines'][0]} {u['function']}" for u in r["unreached"]], note
+
+
+def cmd_pr(args):
+    ensure_driver()
+    timer = Timer()
+    out = Path(args.out)
+    shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True)
+    head_sha = bundle.resolve(args.head)
+    base_sha = bundle.git("merge-base", bundle.resolve(args.base), head_sha)
+    root, m, base_sim, base_units = ensure_baseline(base_sha, args.jobs, timer)
+    timer.done("baseline")
+
+    head_sim = build_sim(args.head)
+    head_fw = bundle.firmware_dir(args.head)
+    head_units = bundle.load_units(head_fw)
+    by_id = {u["id"]: u for u in head_units}
+    timer.done("head build")
+
+    sel, unreached, sel_note = select_units(base_sha, args.head, head_units)
+    globbed = matching(head_units, args.graphical)
+    run = [u for u in head_units if u["id"] in sel | globbed]
+    head_ok = bundle.run_units(head_sim, run, out / "head", "headless", args.jobs)
+    timer.done("head headless")
+
+    def unit_dirs(uid):
+        s = bundle.slug(uid)
+        return root / "units" / s, out / "head" / "units" / s
+
+    # One firmware change usually shows up identically in many units (a reworded warning hits
+    # every vector that triggers it); evidence for one of them is evidence for all.
+    groups = {}
+    for u in run:
+        b, h = unit_dirs(u["id"])
+        lb, lh = screen_lines(load_screens(b)), screen_lines(load_screens(h))
+        ok_b = m["units"].get(u["id"], {}).get("headless_ok")
+        if u["id"] in m["units"] and (lb != lh or ok_b != head_ok[u["id"]]):
+            key = (ok_b, head_ok[u["id"]], *(line for line in difflib.unified_diff(lb, lh, lineterm="", n=0)
+                                              if line[:1] in "+-" and line[:3] not in ("+++", "---")))
+            groups.setdefault(key, []).append(u["id"])
+    same_as = {i: ids[0] for ids in groups.values() for i in ids[1:]}
+    changed = {i for ids in groups.values() for i in ids}
+    new = {u["id"] for u in run} - set(m["units"])
+    graphical = (changed - set(same_as)) | new | globbed
+    baseline_graphical(root, m, base_sim, base_units, graphical, args.jobs)
+    bundle.run_units(head_sim, [by_id[i] for i in sorted(graphical)], out / "head", "graphical", args.jobs)
+    # Frames can differ while the text does not (layout, fonts), but also by capture timing (a toast
+    # caught on one side only), so these are reported apart from text changes.
+    frames_only = set()
+    for uid in graphical - new - changed:
+        b, h = unit_dirs(uid)
+        if frame_hashes(b) is not None and frame_hashes(h) is not None and frame_hashes(b) != frame_hashes(h):
+            frames_only.add(uid)
+    # Base evidence next to the head's, so report.md's relative links work from a CI artifact.
+    for uid in changed | graphical:
+        b, _ = unit_dirs(uid)
+        if b.exists():
+            shutil.copytree(b, out / "base" / "units" / b.name, dirs_exist_ok=True)
+    timer.done("graphical")
+
+    head_version = read_text(head_sim / "version.txt")
+    expectations = {}
+    try:
+        import expect
+    except ImportError:
+        expect = None
+    if expect:
+        for u in run:
+            if u.get("expect"):
+                expectations[u["id"]] = expect.check(u, load_screens(unit_dirs(u["id"])[1]), head_version)
+    api_results = apis.run(head_sim, head_fw / bundle.FW_VECTORS, out / "apis")
+    timer.done("lane B")
+
+    pr = {
+        "base": {"ref": args.base, "sha": base_sha, "bundle": str(root), "simulator_version": m["simulator_version"],
+                 "harness_sha": m.get("harness_sha")},
+        "head": {"ref": args.head, "sha": head_sha, "simulator_version": head_version,
+                 "source": read_text(head_sim / "source.txt"), "harness_sha": bundle.harness_sha()},
+        "selection": sel_note,
+        "unreached": unreached,
+        "units": {u["id"]: {
+            "slug": bundle.slug(u["id"]), "kind": u["kind"], "path": u.get("path"),
+            "status": "new" if u["id"] in new else "changed" if u["id"] in changed
+            else "frames-only" if u["id"] in frames_only else "unchanged",
+            "base_ok": m["units"].get(u["id"], {}).get("headless_ok"), "head_ok": head_ok[u["id"]],
+            "graphical": u["id"] in graphical, "same_as": same_as.get(u["id"]), "expect": expectations.get(u["id"]),
+        } for u in run},
+        "removed": sorted(set(m["units"]) - set(by_id)),
+        "base_apis": json.loads((root / "apis" / "results.json").read_text())
+        if (root / "apis" / "results.json").exists() else None,
+        "apis": api_results,
+        "timings": timer.phases,
+    }
+    (out / "pr.json").write_text(json.dumps(pr, indent=2))
+    pr_report(out)
+    timer.done("report")
+    pr["timings"] = timer.phases
+    (out / "pr.json").write_text(json.dumps(pr, indent=2))
+    log(f"timings: {timer.phases}")
+
+
+def api_cell(r):
+    if r is None:
+        return "-"
+    if r.get("error") and not r.get("failing"):
+        return f"**ERROR** ({r['error']})"
+    s = f"{r['passed']} pass"
+    return s + (f" / **{r['failed']} FAIL**" if r["failed"] else "")
+
+
+def short_sha(s):
+    return "-" if not s else s[:9] + ("+dirty" if s.endswith("+dirty") else "")
+
+
+def pr_report(out):
+    out = Path(out)
+    pr = json.loads((out / "pr.json").read_text())
+    units = pr["units"]
+    by = {k: [i for i, u in units.items() if u["status"] == k] for k in ("changed", "new", "frames-only", "unchanged")}
+    failed = [i for i, u in units.items() if not u["head_ok"]]
+    newly = [i for i in failed if units[i]["base_ok"]]
+    exp = {i: u["expect"] for i, u in units.items() if u["expect"]}
+    exp_n = {k: sum(e["status"] == k for e in exp.values()) for k in ("pass", "fail", "no-expectation")}
+    base, head = pr["base"], pr["head"]
+
+    md = [f"# BitBox e2e: `{base['ref']}` -> `{head['ref']}`", "",
+          "| | base (merge-base) | head |", "|---|---|---|",
+          f"| firmware | `{base['sha'][:9]}` | `{head['ref']}` (`{head['sha'][:9]}`) |",
+          f"| simulator | {base['simulator_version']} | {head['simulator_version']} |",
+          f"| harness | `{short_sha(base['harness_sha'])}` | `{short_sha(head['harness_sha'])}` |", ""]
+    if base["harness_sha"] != head["harness_sha"]:
+        md += ["*The baseline was recorded with another harness revision; harness changes can show up as diffs.*", ""]
+    md += ["## Summary", "",
+           f"- **Units**: {len(units)} run (selection: {pr['selection']}), {len(by['changed'])} changed "
+           f"({sum(not units[i].get('same_as') for i in by['changed'])} distinct), "
+           f"{len(by['new'])} new, {len(by['frames-only'])} with graphical-only differences, "
+           f"{len(failed)} failed on head ({len(newly)} newly)"
+           + (f", {len(pr['removed'])} removed" if pr["removed"] else ""),
+           f"- **Expectations**: {exp_n['pass']} pass, {exp_n['fail']} fail, {exp_n['no-expectation']} without "
+           f"expectation for this version, {len(units) - len(exp)} units without expectations",
+           "- **Unreached changed functions**: " + ("n/a (no coverage map)" if pr["unreached"] is None
+                                                    else (", ".join(f"`{f}`" for f in pr["unreached"]) or "none")),
+           "- **Timings**: " + ", ".join(f"{k} {v}s" for k, v in pr["timings"].items()), ""]
+
+    suites = pr["apis"]["suites"]
+    bs = (pr["base_apis"] or {}).get("suites", {})
+    md += ["### API simulator suites", "",
+           "Committed vectors: the repo's own copy (drift vs. firmware). Firmware vectors: the head firmware's "
+           "vectors copied in (regression).", "",
+           "| suite | head: committed vectors | head: firmware vectors | base: committed | base: firmware |",
+           "|---|---|---|---|---|"]
+    for s, modes in suites.items():
+        md.append(f"| {s} | {api_cell(modes.get('committed'))} | {api_cell(modes.get('firmware'))} | "
+                  f"{api_cell(bs.get(s, {}).get('committed'))} | {api_cell(bs.get(s, {}).get('firmware'))} |")
+    md.append("")
+    for s, modes in suites.items():
+        for mode, r in modes.items():
+            if r.get("failing"):
+                md += [f"<details><summary>{s} ({mode} vectors): {len(r['failing'])} failing, log apis/{r['log']}"
+                       "</summary>", "", *[f"- `{n}`" for n in r["failing"]], "", "</details>", ""]
+
+    if exp_n["fail"]:
+        md += ["## Expectation failures", ""]
+        for i, e in exp.items():
+            if e["status"] == "fail":
+                md += [f"### {i}", "", "```diff", *e["diff"].splitlines(), "```", ""]
+
+    titles = {"changed": "Changed units", "new": "New units",
+              "frames-only": "Graphical-only differences (same text; often capture timing, e.g. a toast)"}
+    for kind in titles:
+        if by[kind]:
+            md += [f"## {titles[kind]}", ""]
+        for i in by[kind]:
+            u = units[i]
+            if u.get("same_as"):
+                continue
+            b, h = Path("base/units") / u["slug"], Path("head/units") / u["slug"]
+            md += [f"### {i}", ""]
+            same = [j for j, v in units.items() if v.get("same_as") == i]
+            if same:
+                md += [f"Same screen change in {len(same)} more unit(s): " + ", ".join(f"`{j}`" for j in same), ""]
+            if not u["head_ok"] or u["base_ok"] is False:
+                rb, rh = results(out / b), results(out / h)
+                md += ["| step | base | head |", "|---|---|---|"]
+                md += [f"| `{st}` | {rb.get(st, '-')} | {rh.get(st, '-')} |" for st in dict.fromkeys([*rb, *rh])]
+                md.append("")
+            sb, sh = screen_lines(load_screens(out / b)), screen_lines(load_screens(out / h))
+            diff = list(difflib.unified_diff(sb, sh, "base", "head", lineterm="", n=1))
+            md += ["Headless screens:", ""]
+            md += ["```diff", *diff, "```", ""] if diff else [f"No change ({len(sb)} screens).", ""]
+            if u["graphical"]:
+                md += ["Graphical frames:", ""] + frames_md(out, str(b / "graphical"), str(h / "graphical"),
+                                                            str(Path("diff") / u["slug"]))
+
+    if by["unchanged"]:
+        md += ["## Unchanged units", "", f"<details><summary>{len(by['unchanged'])} units with identical screens"
+               "</summary>", ""]
+        for i in by["unchanged"]:
+            u = units[i]
+            n = len(screen_lines(load_screens(out / "head/units" / u["slug"])))
+            md.append(f"- `{i}`: {n} screens" + ("" if u["head_ok"] else ", **failed on base and head**"))
+        md += ["", "</details>", ""]
+
+    (out / "report.md").write_text("\n".join(md))
+    (out / "report.html").write_text(md_to_html(out, md))
+    log(f"report: {out / 'report.html'}")
+    print(out / "report.html")
+
+
+def cmd_promote(args):
+    import expect
+    out = Path(args.dir)
+    pr = json.loads((out / "pr.json").read_text())
+    for uid in args.units:
+        u = pr["units"].get(uid)
+        if u is None:
+            sys.exit(f"{uid}: not in {out / 'pr.json'}")
+        if not u.get("path"):
+            sys.exit(f"{uid}: only scenario units can be promoted; vector expectations live in the firmware repo")
+        screens = load_screens(out / "head/units" / u["slug"])
+        expect.promote(u["path"], screens, pr["head"]["simulator_version"])
+        log(f"promoted {uid} for {pr['head']['simulator_version']}")
 
 
 def main():
@@ -637,6 +1000,22 @@ def main():
     d.add_argument("--out", required=True)
     d.add_argument("--label")
     d.add_argument("--no-graphical", action="store_true")
+    d.add_argument("--no-headless", action="store_true")
+    for name in ("baseline", "pr"):
+        b = sub.add_parser(name)
+        if name == "baseline":
+            b.add_argument("ref", help="firmware commit")
+            b.add_argument("--force", action="store_true", help="re-record an existing bundle")
+        else:
+            b.add_argument("--base", required=True, help="firmware ref; its merge-base with head keys the bundle")
+            b.add_argument("--head", required=True, help="firmware ref or WORKTREE")
+            b.add_argument("--out", required=True)
+        b.add_argument("--graphical", "--graphical-units", nargs="+", action="extend", default=[], metavar="GLOB",
+                       help="unit id globs to also run on the graphical simulator")
+        b.add_argument("-j", "--jobs", type=int, default=4, help="units in parallel (one netns + X display each)")
+    pm = sub.add_parser("promote")
+    pm.add_argument("dir", help="e2e.py pr --out directory")
+    pm.add_argument("units", nargs="+")
     w = sub.add_parser("wallet-compare")
     w.add_argument("--base", required=True, help="bitbox-wallet-app ref")
     w.add_argument("--head", required=True, help="bitbox-wallet-app ref")
@@ -653,6 +1032,12 @@ def main():
     elif args.cmd == "device":
         ensure_driver()
         cmd_device(args)
+    elif args.cmd == "baseline":
+        cmd_baseline(args)
+    elif args.cmd == "pr":
+        cmd_pr(args)
+    elif args.cmd == "promote":
+        cmd_promote(args)
     else:
         report(args.dir)
 

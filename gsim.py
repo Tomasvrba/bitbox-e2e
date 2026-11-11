@@ -8,6 +8,7 @@ test/simulator-graphical/src/main.rs; update them together.
 
 import hashlib
 import os
+import socket
 import subprocess
 import time
 
@@ -123,21 +124,58 @@ class GraphicalSim:
         else:
             self._touch(TOP_Y, pos, hold_s, 2)
 
-    def hold(self, side="bottom", pos=128, hold_s=3.0):
-        self.tap(side, pos, hold_s)
-
-    def pinch(self, hold_s=3.0):
-        """Touch both sliders at their right end, like the simulator's right-edge hitbox."""
-        self.move(PINCH[0], PINCH[1])
-        time.sleep(hold_s)
+    def pinch(self, max_s=20.0):
+        """Touch both sliders at their right end (the simulator's pinch hitbox) until the screen
+        settles: released once it has been still for 0.3s after changing (a hold-to-confirm
+        animates until it fires, at a frame-rate dependent speed, so no fixed hold time fits a
+        loaded machine), or for 1s if it never changed. Note the release is also a tap at 255 on
+        both sliders, delivered to whatever screen is up by then."""
+        start = last = self.lcd_hash()
+        self.move(*PINCH)
+        t0 = since = time.time()
+        while time.time() - t0 < max_s:
+            time.sleep(0.03)
+            h = self.lcd_hash()
+            if h != last:
+                last, since = h, time.time()
+            elif time.time() - since >= (1.0 if last == start else 0.3):
+                break
         self.move(*IDLE)
+
+    def accepting(self, port=15423):
+        """Whether the simulator keeps a client: until its startup task (orientation, logo) is
+        done it accepts TCP connections and drops them right away."""
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1) as s:
+                s.settimeout(0.3)
+                return s.recv(1) != b""
+        except socket.timeout:
+            return True
+        except OSError:
+            return False
+
+    def choose_orientation(self, timeout_s=30.0):
+        """Tap "Tap this side" at the bottom until the simulator accepts clients. Taps are ignored
+        while the orientation screen's intro animation runs, so one tap at a fixed time is not
+        enough, and the auto-advance policy must not run here: its top tap means upside down."""
+        # A tap that lands shows the logo for 1.3s, then the lockscreen, and the startup task ends.
+        # Later taps hit the logo or lockscreen, which ignore them.
+        deadline = time.time() + timeout_s
+        while time.time() < deadline and self.proc.poll() is None:
+            self.tap("bottom", 128)
+            if self.accepting():
+                # Let the simulator see the probe's disconnect before the driver connects.
+                time.sleep(0.1)
+                return
+            time.sleep(0.3)
+        raise RuntimeError("simulator never finished startup (orientation screen)")
 
     def wait_stable(self, settle_s=0.4, timeout_s=10.0):
         """Wait until the LCD stops changing (animations, scrolling text) and return its hash."""
         deadline = time.time() + timeout_s
         last, since = self.lcd_hash(), time.time()
         while time.time() < deadline:
-            time.sleep(0.05)
+            time.sleep(0.03)
             h = self.lcd_hash()
             if h != last:
                 last, since = h, time.time()

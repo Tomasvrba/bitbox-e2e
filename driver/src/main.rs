@@ -52,6 +52,73 @@ enum Step {
         keypath: String,
         message: String,
     },
+    // Mirrors bitbox-api-rs tests/test_btc_psbt.rs, so firmware BTC test vectors run unchanged:
+    // `registrations`, `force_script_config` and `format_unit` use the vector JSON format.
+    // Registrations run first as their own step `<name>-register`; if one fails, signing is skipped.
+    BtcSignPsbt {
+        name: String,
+        coin: Coin,
+        psbt: String,
+        #[serde(default)]
+        registrations: Vec<Registration>,
+        force_script_config: Option<ScriptConfigWithKeypath>,
+        #[serde(default)]
+        format_unit: FormatUnit,
+    },
+}
+
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+enum Coin {
+    Btc,
+    Tbtc,
+    Ltc,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+enum FormatUnit {
+    #[default]
+    Default,
+    Sat,
+}
+
+#[derive(Deserialize)]
+struct Registration {
+    script_config: ScriptConfig,
+    keypath: Option<String>,
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct ScriptConfigWithKeypath {
+    script_config: ScriptConfig,
+    keypath: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ScriptConfig {
+    Simple {
+        script_type: String,
+    },
+    Multisig {
+        threshold: u32,
+        xpubs: Vec<String>,
+        our_xpub_index: u32,
+        script_type: String,
+    },
+    Policy {
+        policy: String,
+        keys: Vec<KeyOriginInfo>,
+    },
+}
+
+#[derive(Deserialize)]
+struct KeyOriginInfo {
+    root_fingerprint: Option<String>,
+    keypath: Option<String>,
+    xpub: String,
 }
 
 fn emit(v: serde_json::Value) {
@@ -86,6 +153,86 @@ fn addr(s: &str) -> [u8; 20] {
 
 fn keypath(s: &str) -> bitbox_api::Keypath {
     s.try_into().expect("invalid keypath")
+}
+
+fn btc_coin(c: Coin) -> pb::BtcCoin {
+    match c {
+        Coin::Btc => pb::BtcCoin::Btc,
+        Coin::Tbtc => pb::BtcCoin::Tbtc,
+        Coin::Ltc => pb::BtcCoin::Ltc,
+    }
+}
+
+fn script_config(c: &ScriptConfig) -> pb::BtcScriptConfig {
+    use pb::btc_script_config::{multisig::ScriptType, SimpleType};
+    match c {
+        ScriptConfig::Simple { script_type } => bitbox_api::btc::make_script_config_simple(
+            match script_type.as_str() {
+                "p2wpkh" => SimpleType::P2wpkh,
+                "p2wpkh_p2sh" => SimpleType::P2wpkhP2sh,
+                "p2tr" => SimpleType::P2tr,
+                other => panic!("unknown simple script type {other}"),
+            },
+        ),
+        ScriptConfig::Multisig { threshold, xpubs, our_xpub_index, script_type } => {
+            let xpubs: Vec<bitcoin::bip32::Xpub> =
+                xpubs.iter().map(|x| x.parse().expect("invalid xpub")).collect();
+            bitbox_api::btc::make_script_config_multisig(
+                *threshold,
+                &xpubs,
+                *our_xpub_index,
+                match script_type.as_str() {
+                    "p2wsh" => ScriptType::P2wsh,
+                    "p2wsh_p2sh" => ScriptType::P2wshP2sh,
+                    other => panic!("unknown multisig script type {other}"),
+                },
+            )
+        }
+        ScriptConfig::Policy { policy, keys } => {
+            let keys: Vec<bitbox_api::btc::KeyOriginInfo> = keys
+                .iter()
+                .map(|k| bitbox_api::btc::KeyOriginInfo {
+                    root_fingerprint: k
+                        .root_fingerprint
+                        .as_deref()
+                        .map(|f| f.parse().expect("invalid fingerprint")),
+                    keypath: k.keypath.as_deref().map(keypath),
+                    xpub: k.xpub.parse().expect("invalid xpub"),
+                })
+                .collect();
+            bitbox_api::btc::make_script_config_policy(policy, &keys)
+        }
+    }
+}
+
+fn signature_count(psbt: &bitcoin::psbt::Psbt) -> usize {
+    psbt.inputs
+        .iter()
+        .map(|i| i.partial_sigs.len() + i.tap_key_sig.is_some() as usize + i.tap_script_sigs.len())
+        .sum()
+}
+
+// Registers what a btc-sign-psbt step needs, skipping configs that are already registered.
+async fn btc_register(
+    bb: &bitbox_api::PairedBitBox<TokioRuntime>,
+    coin: Coin,
+    registrations: &[Registration],
+) -> Result<(), bitbox_api::error::Error> {
+    for r in registrations {
+        let config = script_config(&r.script_config);
+        let kp = r.keypath.as_deref().map(keypath);
+        if !bb.btc_is_script_config_registered(btc_coin(coin), &config, kp.as_ref()).await? {
+            bb.btc_register_script_config(
+                btc_coin(coin),
+                &config,
+                kp.as_ref(),
+                pb::btc_register_script_config_request::XPubType::AutoXpubTpub,
+                Some(&r.name),
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 async fn run_step(
@@ -138,6 +285,20 @@ async fn run_step(
                 .await?;
             (name.clone(), json!({ "signature": hex::encode(sig) }))
         }
+        Step::BtcSignPsbt { name, coin, psbt, force_script_config, format_unit, .. } => {
+            let mut psbt = bitcoin::psbt::Psbt::deserialize(&bytes(psbt)).expect("invalid PSBT");
+            let before = signature_count(&psbt);
+            let force = force_script_config.as_ref().map(|c| pb::BtcScriptConfigWithKeypath {
+                script_config: Some(script_config(&c.script_config)),
+                keypath: keypath(&c.keypath).to_vec(),
+            });
+            let unit = match format_unit {
+                FormatUnit::Default => pb::btc_sign_init_request::FormatUnit::Default,
+                FormatUnit::Sat => pb::btc_sign_init_request::FormatUnit::Sat,
+            };
+            bb.btc_sign_psbt(btc_coin(*coin), &mut psbt, force, unit).await?;
+            (name.clone(), json!({ "signatures_added": signature_count(&psbt) - before }))
+        }
     })
 }
 
@@ -146,7 +307,8 @@ fn step_name(step: &Step) -> &str {
         Step::EthAddress { name, .. }
         | Step::EthSign { name, .. }
         | Step::EthSign1559 { name, .. }
-        | Step::EthSignMessage { name, .. } => name,
+        | Step::EthSignMessage { name, .. }
+        | Step::BtcSignPsbt { name, .. } => name,
     }
 }
 
@@ -180,6 +342,18 @@ async fn main() {
 
     let mut failed = false;
     for step in &scenario.steps {
+        if let Step::BtcSignPsbt { name, coin, registrations, .. } = step {
+            if !registrations.is_empty() {
+                let reg = format!("{name}-register");
+                start_step(&reg);
+                if let Err(err) = btc_register(&bb, *coin, registrations).await {
+                    failed = true;
+                    emit(json!({ "event": "step-end", "step": reg, "error": err.to_string() }));
+                    continue;
+                }
+                emit(json!({ "event": "step-end", "step": reg, "result": {} }));
+            }
+        }
         start_step(step_name(step));
         match run_step(&bb, step).await {
             Ok((name, result)) => emit(json!({ "event": "step-end", "step": name, "result": result })),
