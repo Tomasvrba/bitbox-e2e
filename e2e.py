@@ -522,9 +522,25 @@ def pixel_diff(a_path, b_path, out_path):
     a, b = Image.open(a_path).convert("RGB"), Image.open(b_path).convert("RGB")
     if a.size != b.size:
         return None
+    from PIL import ImageDraw, ImageFilter
+    # Overlaying base and head pixels makes changed text unreadable. Instead draw head, dimmed,
+    # with each changed line band re-drawn in red and boxed.
     mask = ImageChops.difference(a, b).convert("L").point(lambda v: 255 if v else 0)
-    red = Image.new("RGB", a.size, (255, 40, 40))
-    Image.composite(red, b.point(lambda v: v // 3), mask).save(out_path)
+    region = mask.filter(ImageFilter.MaxFilter(9))
+    lum = b.convert("L")
+    red = Image.merge("RGB", (lum, lum.point(lambda v: v // 5), lum.point(lambda v: v // 5)))
+    out = Image.composite(red, b.point(lambda v: v // 3), region)
+    draw, w = ImageDraw.Draw(out), out.width
+    rows = [any(region.getpixel((x, y)) for x in range(w)) for y in range(out.height)] + [False]
+    start = None
+    for y, on in enumerate(rows):
+        if on and start is None:
+            start = y
+        elif not on and start is not None:
+            box = region.crop((0, start, w, y)).getbbox()
+            draw.rectangle((box[0], start, box[2] - 1, y - 1), outline=(255, 60, 60))
+            start = None
+    out.save(out_path)
     return out_path
 
 
