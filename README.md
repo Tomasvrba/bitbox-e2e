@@ -9,14 +9,28 @@ contract between the pieces is `DESIGN.md`.
 ## Setup (once per machine)
 
 ```sh
-e2e/setup.sh          # LLVM 22, protoc 21.2, cmocka, cbindgen, bindgen, rust pin, node 26, driver
-source e2e/env.sh     # PATH/LIBCLANG_PATH/PKG_CONFIG_PATH for manual builds
+e2e/setup.sh          # LLVM 22, protoc 21.2, cmocka, cbindgen, bindgen, rust pin, driver; if missing: uv, cmake, ast-grep, go, node 26, anvil
+source e2e/env.sh     # PATH, LIBCLANG_PATH, PKG_CONFIG_PATH, BITBOX_NODE_BIN; source it before e2e.py and the flows
 ```
 
-Host prerequisites: git, curl, gcc, make, pkg-config, python3, rustup, go, uv, Xvfb, Mesa GL
-(`libgl1-mesa-dri`), `unshare` with unprivileged user namespaces. Tools land in
-`~/.local/share/bitbox-e2e` (~2G), builds, clones and baselines in `~/.cache/bitbox-e2e`
-(`$BITBOX_E2E_CACHE`).
+x86_64 Linux only. `setup.sh` first checks what needs root and, if anything is missing, lists all
+of it with the `apt-get install` line and stops: git, curl, tar, xz, unzip, gcc, make, pkg-config,
+python3, coreutils, binutils (`c++filt`), util-linux (`unshare`), iproute2 (`ip`), Xvfb and the
+graphical simulator's libraries (`libegl1 libgl1 libx11-xcb1 libxcursor1 libxi6 libxrender1
+libxkbcommon-x11-0 libgl1-mesa-dri`). rustup has to be there too (no root needed).
+
+The rest goes into `~/.local/share/bitbox-e2e/tools` (`$BITBOX_E2E_HOME/tools`, ~1.5G fresh)
+unless the host already has it. LLVM 22 with libclang (`llvm-config-22`, e.g. apt.llvm.org's),
+protoc 21.2, cmocka, cbindgen 0.29.2 and bindgen 0.72.1 on `PATH` are used in place, as in the
+firmware dev container (`shiftcrypto/firmware_v2`). uv, cmake, ast-grep (invoked as `ast-grep`;
+`sg` is `newgrp` on Debian/Ubuntu), Go (when the host's is older than 1.21), node 26 (when neither
+mise's `node@26` nor the `PATH` node is 26) and anvil (Rabby flow) are downloaded at pinned
+versions. Builds, clones and baselines go to `~/.cache/bitbox-e2e` (`$BITBOX_E2E_CACHE`).
+
+Reported at the end without failing: `isolated.sh` needs unprivileged user namespaces (Ubuntu
+23.10+ restricts them via AppArmor, Docker's default seccomp profile blocks them; `isolated.sh
+true` fails with the reason), and the browser flows need Playwright Chromium's system libraries
+(as root: `npx -y playwright@<version> install-deps chromium`).
 
 ## Firmware PR: `e2e.py pr`
 
@@ -215,8 +229,8 @@ one.
   the ERC-20 approvals. Re-record after changing the flow: unmatched requests are reset.
 - Chains are anvils (chain ids 1, 42161, 56, base fee 0) with the account funded and
   `rabby/fixtures/TestToken.sol` at the real USDC addresses.
-- Extra tools, user-local: anvil from foundry stable in `$BITBOX_E2E_TOOLS/foundry/bin`
-  (`foundry_stable_linux_amd64.tar.gz` release asset), mitmproxy via `uv` (its CA lands in
+- Extra tools, user-local: anvil in `$BITBOX_E2E_TOOLS/foundry/bin` (installed by `setup.sh`),
+  mitmproxy via `uv` (its CA lands in
   `~/.mitmproxy`, Chromium runs with `--ignore-certificate-errors`), Playwright in `rabby/`
   (`npm ci`, done by the command).
 - Rabby reconnects to the bridge for every keyring operation; the bridge lets the new socket take

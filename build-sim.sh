@@ -11,6 +11,11 @@
 # Build output goes to stderr and to <dir>/build.log.
 set -euo pipefail
 
+if [ "$(uname -sm)" != "Linux x86_64" ]; then
+  echo "build-sim.sh: only x86_64 Linux is supported (this is $(uname -sm))" >&2
+  exit 1
+fi
+
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 FW="${BITBOX_FIRMWARE:-$BITBOX_WORKSPACE/bitbox02-firmware}"
 COV=
@@ -42,8 +47,12 @@ build() {
       rustup component add llvm-tools --toolchain "$RUSTUP_TOOLCHAIN" >&2
     # -Zbuild-std builds std without profiler_builtins, so link LLVM's profile runtime ourselves.
     # Its version must match rustc's LLVM (the pinned clang and rustc are both on LLVM 22).
+    # LIBCLANG_PATH is setup.sh's LLVM (release layout) or a system one (Debian layout, from
+    # libclang-rt-22-dev), see env.sh.
     local rt
-    rt="$(echo "$BITBOX_E2E_TOOLS"/llvm/lib/clang/*/lib/x86_64-unknown-linux-gnu/libclang_rt.profile.a)"
+    rt="$(compgen -G "$LIBCLANG_PATH/clang/*/lib/x86_64-unknown-linux-gnu/libclang_rt.profile.a" ||
+      compgen -G "$LIBCLANG_PATH/clang/*/lib/linux/libclang_rt.profile-x86_64.a" || true)"
+    [ -n "$rt" ] || { echo "build-sim.sh: no libclang_rt.profile in $LIBCLANG_PATH/clang (system LLVM: install libclang-rt-22-dev)" >&2; return 1; }
     # Counter relocation enables continuous mode (%c), so profiles survive the simulator being killed.
     export RUSTFLAGS="-C instrument-coverage -C llvm-args=-runtime-counter-relocation"
     flags=(-DCMAKE_C_STANDARD_LIBRARIES="-Wl,-u,__llvm_profile_runtime $rt")
@@ -57,14 +66,21 @@ build() {
     make -C build-e2e -j"$(nproc)" "${bin[@]}" >&2
   ) > >(tee "$out/build.log" >&2) 2>&1
   for b in "${bin[@]}"; do cp "$src/build-e2e/bin/$b" "$out/"; done
-  "$out/simulator" --version > "$out/version.txt" 2>&1 || true
   rm -rf "$out/.build-profraw"
+  # The release name (bitbox02-multi-v9.28.0-simulator1.0.0-linux-amd64) is the simulator version
+  # everywhere downstream; without it the build is unusable, and a version.txt left behind would
+  # make the next run take it from the cache.
+  local version
+  if ! version="$("$out/simulator" --version 2>&1)" || [[ "$version" != bitbox02-*-simulator* ]]; then
+    rm -f "$out/version.txt"
+    echo "build-sim.sh: '$out/simulator --version' gave no release name (bitbox02-*-simulator*):" >&2
+    echo "$version" >&2
+    return 1
+  fi
+  echo "$version" > "$out/version.txt"
   # Host test harnesses (e.g. bitbox-api-ts) parse the firmware version out of the file name,
   # so also expose the binary under its release name.
-  local name
-  name="$(head -1 "$out/version.txt")"
-  [[ "$name" == bitbox02-*-simulator* ]] && ln -sf simulator "$out/$name"
-  return 0
+  ln -sf simulator "$out/${version%%$'\n'*}"
 }
 
 if [ "$REF" = "WORKTREE" ]; then

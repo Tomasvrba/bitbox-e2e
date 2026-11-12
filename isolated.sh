@@ -4,4 +4,17 @@
 # Build outside: cargo/uv can't reach the network in here.
 #
 #   isolated.sh e2e.py device --scenario ... --out ...
+#   isolated.sh true      exits non-zero, with the reason on stderr, where namespaces are unavailable
+set -euo pipefail
+
+# Probe first: when the namespace can't be created, unshare's own error doesn't say why.
+if ! err="$(unshare --user --map-root-user --net true 2>&1)"; then
+  echo "isolated.sh: can't create an unprivileged user+network namespace (unshare: ${err:-failed})." >&2
+  echo "  Ubuntu 23.10+ restricts them via AppArmor (kernel.apparmor_restrict_unprivileged_userns=1);" >&2
+  echo "  Docker's default seccomp profile blocks them in containers; some kernels disable them" >&2
+  echo "  (kernel.unprivileged_userns_clone=0, user.max_user_namespaces=0)." >&2
+  exit 1
+fi
+command -v ip >/dev/null || { echo "isolated.sh: 'ip' (iproute2) is missing, it brings up loopback in the namespace" >&2; exit 1; }
+
 exec unshare --user --map-root-user --net sh -c 'ip link set lo up && exec "$@"' sh "$@"
