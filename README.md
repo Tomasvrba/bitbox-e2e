@@ -1,7 +1,7 @@
 # BitBox simulator e2e
 
-Per firmware change: run the units the change reaches on the head simulator, diff them against
-the merge-base, and check everything that has expectations. Evidence is the exact device screen
+Per firmware change: run every unit on the head simulator, diff them against the merge-base, and
+check everything that has expectations. Evidence is the exact device screen
 text (headless C simulator transcript), LCD screenshots (graphical simulator on Xvfb) and the
 host API simulator suites. Everything builds natively, without docker and without root. The
 contract between the pieces is `DESIGN.md`.
@@ -22,24 +22,30 @@ Host prerequisites: git, curl, gcc, make, pkg-config, python3, rustup, go, uv, X
 
 ```sh
 e2e/e2e.py pr --base bitbox/master --head my-branch --out /tmp/e2e/my-branch \
-  [--graphical 'btc-vector/*fee*' ...] [--units 'eth-matrix/*' ...] [-j 4]
+  [--graphical 'btc-vector/*fee*' ...] [-j 4]
 ```
 
 `--head WORKTREE` builds the firmware checkout as-is, uncommitted changes included. Steps:
 
 1. Baseline bundle for `merge-base(base, head)`: reused from the cache, recorded if missing (see
    `baseline`).
-2. Build head, select units: with a coverage map for the merge-base, the units that execute the
-   changed Rust lines (`coverage.py select`), else all units. `--graphical` globs add units;
-   `--units` globs add units headless only (e.g. to `promote` units the change didn't reach).
-3. **Lane A, evidence**: selected units run headless on head and are diffed against the bundle.
-   Units whose screens changed (one per distinct change), new units and the `--graphical` globs
-   also run on the graphical simulator, on both sides.
-4. **Lane B, regression**: units with expectations are checked on head (pass/fail), and the
+2. Build head. Every unit runs headless on it (88 units: ~40s at `-j 4`).
+3. **Lane A, evidence**: each unit's head screens are diffed against the bundle. Units whose
+   screens changed (one per distinct change), new units and the `--graphical` globs also run on
+   the graphical simulator, on both sides.
+4. **Lane B, regression**: every unit with expectations is checked on head (pass/fail), and the
    api-go/api-rs/api-ts simulator suites run against head, once with each repo's committed vector
    copy (drift) and once with the firmware's vectors (regression).
 
 Output: `report.md` (relative images, for CI artifacts), `report.html` (self-contained), `pr.json`.
+
+Exit code (the gate): 0 no regression, 1 regression, 2 the harness itself failed. A regression is
+a unit that completed on the merge-base and fails on head, or, in the API suites' run with the
+firmware's vectors, a test that passed on the merge-base and fails on head or a suite that errors
+on head (build failure, crash, no tests ran). The reasons are `verdict` in `pr.json` and the top
+of the report. Reported, not gating: changed screens, expectation mismatches (expectations live
+here and are promoted after the firmware PR merges) and API tests failing with the API repos'
+committed vector copies (those assert the old screens until the copies are synced).
 
 ### Units
 
@@ -62,9 +68,11 @@ A unit is one scenario run (`units.py <firmware-dir>` lists them):
 
 ### Reading the report
 
-- Summary: units run and why (coverage selection or all), changed/new/failed counts, expectation
-  pass/fail, **changed functions no unit reached** (the change has no evidence; add a scenario),
-  phase timings.
+- Verdict: the gate's reasons, and the non-gating counts (changed units, expectation mismatches).
+- Summary: units run, changed/new/failed counts, expectation
+  pass/fail, **changed functions no unit reached** (the change has no evidence; add a scenario)
+  and changed files the coverage map cannot see (C, protos, token lists, build files), phase
+  timings.
 - API simulator suites: per suite, committed vs firmware vectors, head and base.
 - Expectation failures: diff of expected vs head screens.
 - Changed units: headless screen diff (authoritative: full addresses, no scrolling) and the
@@ -87,8 +95,10 @@ e2e/e2e.py promote /tmp/e2e/my-branch scenario/eth-erc20-unknown ...
 
 `baseline` records `$BITBOX_E2E_CACHE/baselines/<sha>/`: every unit headless, lane B results, and
 graphical runs for the given globs (added incrementally later by `pr`). CI publishes it as a
-tarball. `promote`, after a maintainer approved the head screens in a report, writes them into
-the scenario file's `expect` for the head simulator version (scenario units only).
+tarball. It fails (exit 2) instead of recording a bundle where no unit completed.
+`promote`, after a maintainer approved the head screens in a report, writes them into the
+scenario file's `expect` for the head simulator version (scenario units only). `pr.json` stores
+scenario paths relative to the harness checkout; `promote` only writes under its `scenarios/`.
 
 ### Coverage
 
@@ -99,8 +109,10 @@ e2e/coverage.py select --base <sha> --head <ref|WORKTREE> --summary
 ```
 
 `select` maps the diff's changed Rust lines (only code linked into the simulator, no test code)
-to the units executing them, and lists changed functions that no unit executes. C is not
-instrumented. `pr` uses it automatically when the merge-base bundle has a map.
+to the units executing them, lists changed functions that no unit executes, and lists the changed
+files the map has no lines for (C is not instrumented; protos, token lists, build files). `pr`
+uses it, when the merge-base bundle has a map, for the unreached list only;
+it never limits which units run.
 
 ## Single scenario: base vs head
 
@@ -142,7 +154,8 @@ e2e/e2e.py wallet-compare --base bitbox/master --head my-branch --firmware <fw-r
 Runs the app's own Playwright tests (`frontends/web/tests`) from clean clones of both refs, with
 one natively built simulator, Chromium only, no retries, and screenshot/video/trace always on
 (`wallet/playwright.evidence.config.ts`). The report lists per-test status, errors, device screen
-diffs from each test's `simulator.log`, and final screenshots that differ.
+diffs from each test's `simulator.log`, and final screenshots that differ. Exits 1 when a test that
+passed on base does not pass on head.
 
 Use the upstream remote for bases: `bitbox/master` in the BitBoxSwiss repos (`origin` is a personal
 fork, stale in wallet-app), `rabby/develop` in Rabby.
@@ -160,6 +173,8 @@ e2e/wc/flow.py run --ref <app-ref> --out <dir>           # one side; flow.py sam
 copied into the app clone, approves the session and each request in the app; `wc/device.py` runs
 the graphical simulator (preseeded) and confirms everything on device. Per step the report shows
 the app screenshots (request, result) next to the device frames, base vs head, changed ones flagged.
+Exits 1 when either side's flow failed (Playwright test failed, or a signature recovered to another
+account).
 
 - Runs in the host network namespace (relay, Etherscan proxy), not in `isolated.sh`, so ports
   8080/8082/15423 must be free. Not runnable offline or where the relay is blocked.
@@ -188,6 +203,8 @@ on Ethereum, `wallet_switchEthereumChain` to Arbitrum with an ETH and an ERC-20 
 token on device), and to BNB Chain with a legacy (type 0) transfer. `rabby/run.py` drives the device
 with the `run_graphical` policy. Per step the report shows the Rabby approval and dapp result
 screenshots next to the device frames, base vs head, changed frames flagged with a pixel diff.
+Exits 1 when either side's flow failed, including Rabby importing an account other than the funded
+one.
 
 - Runs offline inside `isolated.sh`; one flow takes ~2.5 min. Displays: `--display` (simulator,
   default `$E2E_DISPLAY` or `:71`) and `--browser-display` (`:73`).
@@ -237,6 +254,12 @@ its untracked files cannot leak into the build. Results are cached by commit sha
 - The simulator busy-loops (~1 core per run). Under heavy load a late host poll lets the firmware
   time out the request ("error querying device info"); keep concurrent graphical runs at about
   half the cores and use `nice`.
+
+## Harness tests
+
+```sh
+cd e2e && uv run --no-project --with pytest pytest tests/   # no simulator needed
+```
 
 ## Gotchas
 

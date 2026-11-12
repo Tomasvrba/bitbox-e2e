@@ -7,12 +7,19 @@ maintainer promotes approved screens.
 
 ## Lanes
 
-- **A, evidence** (`e2e.py pr`): run the units selected for the change on the head simulator and
-  diff each against the merge-base baseline bundle. Report only differing/new screens, plus the
-  changed firmware functions that no unit reached.
+- **A, evidence** (`e2e.py pr`): run every unit headless on the head simulator and diff each
+  against the merge-base baseline bundle. Report only differing/new screens, plus the changed
+  firmware functions that no unit reached and the changed files coverage cannot see.
 - **B, regression** (`e2e.py pr`, same run): every unit that has expectations is checked on head
   (pass/fail), and the api-go/api-rs/api-ts simulator suites run against the head simulator,
   once with their committed vector copies (drift) and once with the firmware's vectors.
+
+The report is the product; the gate is secondary and fires only on regressions against the
+merge-base. `pr` exits 1 when a unit that completed on base fails on head, or when, with the
+firmware's vectors, an API test that passed on base fails on head or an API suite errors on head
+(build, crash, no tests ran); 2 when the harness itself fails; else 0. Expectation mismatches,
+changed screens and failures with the API repos' committed vector copies (drift) are reported,
+never gating. `e2e.verdict` computes the reasons from `pr.json` data.
 
 ## Units
 
@@ -36,6 +43,8 @@ A unit is one scenario run. `units.load_units(firmware_dir, scenarios_dir)` retu
   picks the expectation whose version range contains the simulator version.
 - `e2e.py promote <pr-out-dir> <unit-id>...` writes head screens into the scenario's `expect`
   for the head simulator version (scenario units only; vectors are owned by the firmware repo).
+  `pr.json` stores the scenario path relative to the harness checkout; promote resolves it locally
+  and refuses anything outside `scenarios/`.
 
 Screens are the `screens.json` list `run_headless` writes (headless simulator transcript).
 
@@ -61,8 +70,10 @@ tarball (release asset); locally it lives in the cache.
 - `coverage.py map <ref>` runs every unit headless on it, one profile per unit, and writes
   `coverage/map.json`: `{"functions": {"<file>::<function>": [unit ids]}, "lines": {"<file>": {"<line>": [unit ids]}}}`.
 - `coverage.py select --base <sha> --head <ref>`: changed lines in Rust files linked into the
-  simulator → units to run, and the changed functions/lines that no unit executes. Changed lines in
-  head that do not exist in base are mapped by function name.
+  simulator → units executing them, the changed functions/lines that no unit executes, and the
+  changed files the map has no lines for (`unmapped`). Changed lines in head that do not exist in
+  base are mapped by function name. `pr` reports the unreached functions and unmapped files; the
+  selected units do not limit or extend what it runs.
 
 ## Parallel runs
 

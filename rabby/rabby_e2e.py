@@ -144,14 +144,19 @@ def cmd_rabby(args):
     out = Path(args.out)
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
+    failed = []
     for side in ("base", "head"):
-        run_flow(sims[side], dist, out / side, args.display, args.browser_display)
+        if not run_flow(sims[side], dist, out / side, args.display, args.browser_display):
+            failed.append(side)
         m = json.loads((out / side / "meta.json").read_text()) if (out / side / "meta.json").exists() else {}
         m["label"] = f"{side}: {getattr(args, side)}"
         m["rabby_ref"] = args.rabby_ref
         (out / side).mkdir(exist_ok=True)
         (out / side / "meta.json").write_text(json.dumps(m, indent=2))
     report(out)
+    if failed:
+        log(f"flow failed on {', '.join(failed)}")
+    return 1 if failed else 0
 
 
 def frame_seq(run_dir):

@@ -15,15 +15,18 @@ Harness and usage: `e2e/README.md`; contract: `e2e/DESIGN.md`. Read the README b
    `--graphical <glob>` for units whose screenshots the reviewer needs (changed units get them
    anyway). The first run for a merge-base records its baseline (`e2e.py baseline <sha>`, every
    unit headless plus the API suites); later runs reuse it. New ref builds take ~4 min.
-4. **Read `report.md`.**
+4. **Read `report.md`.** The *Verdict* section and the exit code (0 clean, 1 regression, 2
+   harness error) say whether anything that worked on the merge-base broke.
    - Lane A, evidence: *Changed units* and *New units* are what the change looks like on the
      device (headless screen diff is authoritative; frames are the screenshots that differ).
      *Graphical-only differences* are layout changes or capture timing: rerun that unit once
      (`--graphical <id>`) to classify.
-   - Lane B, regression: expectation failures, units failing on head that passed on base, and the
-     API suites (committed vectors = drift of that repo's copy; firmware vectors = regression).
-   - *Unreached changed functions*: changed firmware code no unit executes. If non-empty, run the
-     draft procedure below before reporting.
+   - Lane B, regression: units failing on head that passed on base and the API suites with the
+     firmware's vectors gate. Reported only: expectation failures (promoted after the firmware
+     PR merges) and API suite failures with committed vectors (drift of that repo's copy).
+   - *Unreached changed functions*: changed firmware code no unit executes, and changed files the
+     coverage map cannot see (C, protos, token lists). If non-empty, run the draft procedure below
+     before reporting.
    Done when every differing screen and every failure is explained as the intended change, a
    regression, or noise (capture timing, hover state).
 5. **Report**: the screen-level change in one or two sentences, lane B pass/fail, each
@@ -58,13 +61,12 @@ Authors may add to the PR description:
 
 ```
 <!-- e2e
-units: btc-vector/*fee*, scenario/eth-erc20-*
 graphical: btc-vector/*fee*
 api-rs: <branch or sha>   # when the PR needs an unreleased API call
 -->
 ```
 
-`units` adds unit id globs to the coverage selection, `graphical` is `--graphical`, `api-rs`
+`graphical` is `--graphical` (`units` is obsolete: every unit runs headless), `api-rs`
 builds the driver against that `bitbox-api-rs` revision. Planned: CI is to parse it; `e2e.py`
 does not yet. By hand: pass the globs as `--graphical` (which also adds them to the run), and for
 `api-rs` check out that revision in the sibling `bitbox-api-rs` and rebuild the driver.

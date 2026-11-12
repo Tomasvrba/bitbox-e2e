@@ -45,7 +45,7 @@ ANVIL = Path(os.environ.get("ANVIL", Path(os.environ.get("BITBOX_E2E_TOOLS", Pat
 CHAINS = {1: 8545, 42161: 8546, 56: 8547}
 # The account Rabby imports: m/44'/60'/0'/0/0 of simulator-graphical's --preseed mnemonic. Funded
 # before the browser starts, so it can't come from Rabby; flow.ts reports the address Rabby got
-# and run.py checks it.
+# and a different one fails the run (every transfer would hit an unfunded account).
 ADDRESS = "0x416e88840eb6353e49252da2a2c140ea1f969d1a"
 # Real token addresses get TestToken's code (see fixtures/TestToken.sol).
 TOKENS = {1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 42161: "0xaf88d065e77c8cC2239327C5EDB3A432268e5831"}
@@ -148,6 +148,7 @@ def main():
     t0 = time.time()
     frames, events, shots = [], [], []
     ok = False
+    error = None
     try:
         xvfb = gsim.Xvfb(args.display, logs / "xvfb-sim.log")
         cleanup.append(xvfb.stop)
@@ -221,7 +222,8 @@ def main():
                     shots.append({k: ev[k] for k in ("step", "file", "what")})
                 elif ev.get("event") == "step-end" and ev.get("step") == "pairing" and "result" in ev:
                     if ev["result"].get("address", "").lower() != ADDRESS:
-                        log(f"Rabby imported {ev['result'].get('address')}, anvil funded {ADDRESS}")
+                        error = f"Rabby imported {ev['result'].get('address')}, anvil funded {ADDRESS}"
+                        log(error)
                 elif ev.get("event") == "step-end" and "error" in ev:
                     log(f"step {ev['step']} failed: {ev['error'].splitlines()[0]}")
                 elif ev.get("event") == "done":
@@ -277,7 +279,8 @@ def main():
     (out / "frames.json").write_text(json.dumps(keep, indent=2))
     (out / "shots.json").write_text(json.dumps(shots, indent=2))
     (out / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
-    meta = {"ok": ok, "seconds": round(time.time() - t0, 1), "simulator": str(args.sim_dir),
+    ok = ok and error is None
+    meta = {"ok": ok, "error": error, "seconds": round(time.time() - t0, 1), "simulator": str(args.sim_dir),
             "source": (Path(args.sim_dir) / "source.txt").read_text().strip() if (Path(args.sim_dir) / "source.txt").exists() else "",
             "simulator_version": (Path(args.sim_dir) / "version.txt").read_text().strip() if (Path(args.sim_dir) / "version.txt").exists() else "",
             "rabby_dist": str(args.rabby_dist), "fixture": "record" if args.record_sock else str(FIXTURE)}

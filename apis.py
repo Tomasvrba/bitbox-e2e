@@ -117,7 +117,21 @@ def parse(suite, text, out_json):
         "failed": sum(v == "fail" for v in st.values()),
         "skipped": sum(v == "skip" for v in st.values()),
         "failing": sorted(k for k, v in st.items() if v == "fail"),
+        # The gate only counts head failures of tests that passed on base.
+        "passing": sorted(k for k, v in st.items() if v == "pass"),
     }
+
+
+def suite_error(code, res):
+    """Why a suite run says nothing about the firmware, or None. `res` is parse()'s output."""
+    # A non-zero exit with no failing test parsed means the suite itself broke (panic, compile, setup).
+    if code and not res["failing"]:
+        return f"exit {code}"
+    # Exit 0 with nothing run is a vacuous pass: a test filter that matches nothing, a skipped
+    # simulator setup, or output this parser no longer understands.
+    if not res["passed"] and not res["failing"]:
+        return "no tests ran"
+    return None
 
 
 def run_one(suite, mode, sim_dir, fw_vectors, out):
@@ -134,7 +148,7 @@ def run_one(suite, mode, sim_dir, fw_vectors, out):
         build(suite, clone, env)
     except subprocess.CalledProcessError as e:
         logf.write_text(f"build failed: {e}\n")
-        return dict(res, error="build failed", passed=0, failed=0, skipped=0, failing=[])
+        return dict(res, error="build failed", passed=0, failed=0, skipped=0, failing=[], passing=[])
     t1 = time.time()
     with open(logf, "w") as f:
         p = subprocess.run(["nice", str(E2E_DIR / "isolated.sh"), *run_cmd(suite, out_json)], cwd=clone, env=env,
@@ -142,9 +156,8 @@ def run_one(suite, mode, sim_dir, fw_vectors, out):
     text = logf.read_text(errors="replace")
     res.update(parse(suite, text, out_json), exit=p.returncode,
                build_s=round(t1 - t0), run_s=round(time.time() - t1))
-    # A non-zero exit with no failing test parsed means the suite itself broke (panic, compile, setup).
-    if p.returncode and not res["failing"]:
-        res["error"] = f"exit {p.returncode}"
+    if err := suite_error(p.returncode, res):
+        res["error"] = err
     log(f"{suite} {mode}: {res['passed']} passed, {res['failed']} failed ({res['run_s']}s)")
     return res
 
@@ -161,7 +174,8 @@ def run(sim_dir, fw_vectors, out, suites=tuple(SUITES)):
         try:
             results.setdefault(s, {})[m] = f.result()
         except Exception as e:  # one broken suite must not hide the others
-            results.setdefault(s, {})[m] = {"error": repr(e), "passed": 0, "failed": 0, "skipped": 0, "failing": []}
+            results.setdefault(s, {})[m] = {"error": repr(e), "passed": 0, "failed": 0, "skipped": 0, "failing": [],
+                                            "passing": []}
     results = {"simulator": (Path(sim_dir) / "version.txt").read_text().strip(), "suites": results}
     (out / "results.json").write_text(json.dumps(results, indent=2))
     return results

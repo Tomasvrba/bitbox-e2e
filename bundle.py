@@ -87,6 +87,7 @@ def run_units(sim_dir, unit_list, root, view, jobs):
         d.mkdir(parents=True, exist_ok=True)
         (d / "scenario.json").write_text(json.dumps(u["scenario"], indent=2))
         disp = displays.get()
+        error = None
         try:
             skip = "--no-graphical" if view == "headless" else "--no-headless"
             cmd = ["nice", str(E2E_DIR / "isolated.sh"), sys.executable, str(E2E_DIR / "e2e.py"), "device",
@@ -96,11 +97,18 @@ def run_units(sim_dir, unit_list, root, view, jobs):
                 subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, timeout=900,
                                env=dict(os.environ, E2E_DISPLAY=disp))
         except subprocess.TimeoutExpired:
-            pass
+            error = "timeout"
         finally:
             displays.put(disp)
-        meta = d / "meta.json"
-        return json.loads(meta.read_text()).get(f"{view}_ok") if meta.exists() else False
+        meta_path = d / "meta.json"
+        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        if error is None and meta.get(f"{view}_ok") is None:
+            error = f"no result, see {view}.log"  # e2e.py device crashed before writing meta.json
+        if error:
+            # The report shows why, instead of a bare failure.
+            meta.update({f"{view}_ok": False, f"{view}_error": error})
+            meta_path.write_text(json.dumps(meta, indent=2))
+        return meta[f"{view}_ok"]
 
     t0 = time.time()
     with ThreadPoolExecutor(jobs) as ex:

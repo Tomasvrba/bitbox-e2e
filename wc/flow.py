@@ -112,9 +112,19 @@ def cmd_wc(args):
     out.mkdir(parents=True)
     ensure_dapp()
     sim_dir = e2e.build_sim(args.firmware)
+    failed = []
     for side, ref in (("base", args.base), ("head", args.head)):
-        run_side(ref, sim_dir, out / side)
+        meta = run_side(ref, sim_dir, out / side)
+        # The test tolerates requests the app or dapp rejects (they show in the report as errors);
+        # a signature from the wrong account is a failure the test does not check.
+        steps, _ = load_side(out / side)
+        bad = [r["step"] for r in steps if ((r.get("dapp") or {}).get("check") or {}).get("signerMatches") is False]
+        if not meta["passed"] or bad:
+            failed.append(f"{side} ({'signer mismatch in ' + ', '.join(bad) if bad else 'playwright failed'})")
     report(out)
+    if failed:
+        e2e.log(f"wc flow failed: {'; '.join(failed)}")
+    return 1 if failed else 0
 
 
 # --- report ---------------------------------------------------------------------------------------

@@ -199,6 +199,11 @@ def cmd_map(args):
                     hits[table[name][0]].add(uid)
     if table is None:
         raise RuntimeError(f"no profiles under {work}; did the instrumented simulator run?")
+    if not table:
+        # norm_path depends on how rustc remapped the build directory; an unrecognised shape drops
+        # every function, and an empty map would make select report every diff as unreached.
+        raise RuntimeError("no firmware Rust functions in the coverage export; check norm_path against "
+                           f"`{cov} export -format=lcov -instr-profile <profdata> {binary} | grep ^SF:`")
 
     ranges = {}
     for key, _, first, last in table.values():
@@ -221,10 +226,25 @@ def cmd_map(args):
 
 # --- select ---------------------------------------------------------------------------------------
 
+def diff_range(base, head):
+    return [base] + ([] if head == "WORKTREE" else [head])
+
+
+def unmapped_files(base, head, mapped):
+    """Changed files (base-side path for renames and deletions) that the map has no lines for:
+    C, protos, build files, Rust not linked into the simulator, test code."""
+    out = []
+    for line in git("diff", "--name-status", "-M", *diff_range(base, head)).splitlines():
+        status, path = line.split("\t")[:2]
+        if status.startswith("A") or path not in mapped:
+            out.append(line.split("\t")[-1])
+    return sorted(out)
+
+
 def diff_hunks(base, head):
     """[(base path, head path, base lines, head lines, head anchor)] for Rust files under src/rust/.
     Paths are None for added/deleted files; the anchor is where a pure deletion sits in head."""
-    cmd = ["diff", "-U0", "-M", base] + ([] if head == "WORKTREE" else [head]) + ["--", "src/rust/*.rs"]
+    cmd = ["diff", "-U0", "-M", *diff_range(base, head), "--", "src/rust/*.rs"]
     hunks, a, b = [], None, None
     for line in git(*cmd).splitlines():
         if line.startswith("--- "):
@@ -255,10 +275,13 @@ def source_functions(path, ref):
     """[(first line, last line, name)] of non-test fn items in `path` at `ref` (WORKTREE: on disk)."""
     if (path, ref) not in _fn_cache:
         src = (FW / path).read_text() if ref == "WORKTREE" else git("show", f"{ref}:{path}")
+        # Not `sg`: on Debian/Ubuntu that is newgrp(1).
+        if not shutil.which("ast-grep"):
+            raise RuntimeError("ast-grep not found on PATH (https://ast-grep.github.io); coverage select needs it")
         with tempfile.NamedTemporaryFile("w", suffix=".rs") as f:
             f.write(src)
             f.flush()
-            out = subprocess.run(["sg", "scan", "--inline-rules", _FN_RULE, "--json=compact", f.name],
+            out = subprocess.run(["ast-grep", "scan", "--inline-rules", _FN_RULE, "--json=compact", f.name],
                                  check=True, capture_output=True, text=True).stdout
         _fn_cache[(path, ref)] = [(m["range"]["start"]["line"] + 1, m["range"]["end"]["line"] + 1,
                                    re.search(r"\bfn\s+(\w+)", m["text"])[1]) for m in json.loads(out)]
@@ -323,7 +346,7 @@ def select(base_sha, head_ref, map_ref=None):
     unreached = [{"file": c["file"], "function": c["function"], "lines": sorted(c["lines"])}
                  for c in changed.values() if not c["units"]]
     return {"base": base, "map": m["sha"], "units": sorted(selected), "unreached": unreached,
-            "changed_functions": len(changed)}
+            "changed_functions": len(changed), "unmapped": unmapped_files(base, head_ref, m["lines"])}
 
 
 def summary(r):
@@ -332,6 +355,8 @@ def summary(r):
     s += [f"  {u}" for u in r["units"]]
     s.append(f"{len(r['unreached'])} changed functions no unit executes:")
     s += [f"  {u['file']}:{u['lines'][0]}  {u['function']}" for u in r["unreached"]]
+    s.append(f"{len(r['unmapped'])} changed files outside the coverage map (no unit selection for them):")
+    s += [f"  {f}" for f in r["unmapped"]]
     return "\n".join(s)
 
 

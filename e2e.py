@@ -34,6 +34,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 E2E_DIR = Path(__file__).resolve().parent
@@ -41,6 +42,7 @@ sys.path.insert(0, str(E2E_DIR))
 
 import apis  # noqa: E402
 import bundle  # noqa: E402
+import expect  # noqa: E402
 
 # E2E_DRIVER points at a prebuilt driver and skips the cargo build (CI artifacts, parallel runs).
 DRIVER = Path(os.environ.get("E2E_DRIVER", E2E_DIR / "driver" / "target" / "release" / "bitbox-e2e-driver"))
@@ -120,72 +122,78 @@ def run_headless(sim_dir, scenario, out):
     wait_port_free(SIM_PORT)
     # The headless sim keeps no state unless FAKE_MEMORY_FILEPATH is set; it boots unseeded.
     env = {k: v for k, v in os.environ.items() if k != "FAKE_MEMORY_FILEPATH"}
-    sim = subprocess.Popen(["stdbuf", "-oL", str(sim_dir / "simulator"), "--port", str(SIM_PORT)],
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-    q = queue.Queue()
-    threading.Thread(target=pump, args=(sim.stdout, "sim", q), daemon=True).start()
-    while True:
-        _, _, line = q.get(timeout=20)
-        if line is None or line.startswith("Listening on port"):
-            break
-    drv = start_driver(scenario, stderr=subprocess.PIPE)
-    threading.Thread(target=pump, args=(drv.stdout, "driver", q), daemon=True).start()
-    threading.Thread(target=pump, args=(drv.stderr, "driver-stderr", q), daemon=True).start()
-
+    sim = drv = None
     combined, events = [], []
     parser = ScreenParser()
-    state = {"step": "connect"}
-
-    open_streams = 2
-    deadline = time.time() + 120
-    pending_go = False
-    while open_streams and time.time() < deadline:
-        try:
-            _, tag, line = q.get(timeout=QUIET_S if pending_go else 1)
-        except queue.Empty:
-            if pending_go:
-                # Simulator output for the previous step has drained; release the driver.
-                state["step"] = next_step
-                drv.stdin.write("go\n")
-                drv.stdin.flush()
-                pending_go = False
-            elif drv.poll() is not None:
-                break
-            continue
-        if line is None:
-            open_streams -= tag.startswith("driver")
-            continue
-        combined.append(f"{tag:>13} | {line}")
-        if tag == "driver":
-            ev = json.loads(line)
-            events.append(ev)
-            if ev.get("event") == "step-start":
-                pending_go = True
-                next_step = ev["step"]
-        elif tag == "sim":
-            parser.feed(line, state["step"])
-    # The driver can exit before the pump thread delivered the simulator's output for its last
-    # request (seen with one-screen steps like eth-address); the simulator logs "Waiting for new
-    # clients" once the driver's connection is gone.
-    while True:
-        try:
-            _, tag, line = q.get(timeout=1)
-        except queue.Empty:
-            break
-        if line is None or tag != "sim":
-            continue
-        combined.append(f"{tag:>13} | {line}")
-        parser.feed(line, state["step"])
-        if line.startswith("Waiting for new clients"):
-            break
-    drv.wait(10)
-    sim.terminate()
     try:
-        sim.wait(5)
-    except subprocess.TimeoutExpired:
-        # Seen under load: the simulator ignoring SIGTERM. The transcript is complete already.
-        sim.kill()
-        sim.wait()
+        sim = subprocess.Popen(["stdbuf", "-oL", str(sim_dir / "simulator"), "--port", str(SIM_PORT)],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+        q = queue.Queue()
+        threading.Thread(target=pump, args=(sim.stdout, "sim", q), daemon=True).start()
+        while True:
+            _, _, line = q.get(timeout=20)
+            if line is None or line.startswith("Listening on port"):
+                break
+        drv = start_driver(scenario, stderr=subprocess.PIPE)
+        threading.Thread(target=pump, args=(drv.stdout, "driver", q), daemon=True).start()
+        threading.Thread(target=pump, args=(drv.stderr, "driver-stderr", q), daemon=True).start()
+
+        state = {"step": "connect"}
+        open_streams = 2
+        deadline = time.time() + 120
+        pending_go = False
+        while open_streams and time.time() < deadline:
+            try:
+                _, tag, line = q.get(timeout=QUIET_S if pending_go else 1)
+            except queue.Empty:
+                if pending_go:
+                    # Simulator output for the previous step has drained; release the driver.
+                    state["step"] = next_step
+                    drv.stdin.write("go\n")
+                    drv.stdin.flush()
+                    pending_go = False
+                elif drv.poll() is not None:
+                    break
+                continue
+            if line is None:
+                open_streams -= tag.startswith("driver")
+                continue
+            combined.append(f"{tag:>13} | {line}")
+            if tag == "driver":
+                ev = json.loads(line)
+                events.append(ev)
+                if ev.get("event") == "step-start":
+                    pending_go = True
+                    next_step = ev["step"]
+            elif tag == "sim":
+                parser.feed(line, state["step"])
+        # The driver can exit before the pump thread delivered the simulator's output for its last
+        # request (seen with one-screen steps like eth-address); the simulator logs "Waiting for new
+        # clients" once the driver's connection is gone.
+        while True:
+            try:
+                _, tag, line = q.get(timeout=1)
+            except queue.Empty:
+                break
+            if line is None or tag != "sim":
+                continue
+            combined.append(f"{tag:>13} | {line}")
+            parser.feed(line, state["step"])
+            if line.startswith("Waiting for new clients"):
+                break
+        drv.wait(10)
+    finally:
+        # Also on a stuck driver or a simulator that never listened: nothing may outlive the unit.
+        for p in (drv, sim):
+            if p is None or p.poll() is not None:
+                continue
+            p.terminate()
+            try:
+                p.wait(5)
+            except subprocess.TimeoutExpired:
+                # Seen under load: the simulator ignoring SIGTERM. The transcript is complete already.
+                p.kill()
+                p.wait()
     (out / "combined.log").write_text("\n".join(combined) + "\n")
     (out / "driver.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     screens = parser.screens
@@ -331,6 +339,14 @@ def read_text(p):
     return p.read_text().strip() if p.exists() else ""
 
 
+def sim_version(sim_dir):
+    """The simulator's release name; expectations are picked by the version in it."""
+    v = read_text(Path(sim_dir) / "version.txt")
+    if not v:
+        raise RuntimeError(f"{sim_dir}/version.txt is missing or empty; rebuild it with build-sim.sh")
+    return v
+
+
 def build_sim(ref):
     log(f"building simulators for {ref}")
     res = subprocess.run([str(E2E_DIR / "build-sim.sh"), ref], stdout=subprocess.PIPE, text=True, check=True)
@@ -444,7 +460,10 @@ def cmd_wallet_compare(args):
     for side, ref in (("base", args.base), ("head", args.head)):
         (out / side).mkdir()
         run_wallet(ref, sim_dir, args.tests, out / side)
-    wallet_report(out)
+    regressions = wallet_report(out)
+    for r in regressions:
+        log(f"regression: {r}")
+    return 1 if regressions else 0
 
 
 def wallet_report(out):
@@ -456,6 +475,10 @@ def wallet_report(out):
           f"| source | {meta['base']['source']} | {meta['head']['source']} |",
           f"| simulator | {meta['base']['simulator']} | {meta['head']['simulator']} |",
           f"| passed | {meta['base']['passed']}/{meta['base']['total']} | {meta['head']['passed']}/{meta['head']['total']} |"]
+    # Tests missing on one side were added or removed by the head ref; only passed -> not passed gates.
+    regressions = [f"`{t}`: passed on base, {th[t]['status']} on head" for t, b in tb.items()
+                   if b["status"] == "passed" and t in th and th[t]["status"] != "passed"]
+    md[1:1] = ["", "**Regressions**: " + ("; ".join(regressions) if regressions else "none")]
     for title in dict.fromkeys(list(tb) + list(th)):
         b, h = tb.get(title, {}), th.get(title, {})
         md.append(f"| `{title}` | {fmt_status(b)} | {fmt_status(h)} |")
@@ -488,6 +511,7 @@ def wallet_report(out):
     (out / "report.html").write_text(md_to_html(out, md))
     log(f"report: {out / 'report.md'}")
     print(out / "report.md")
+    return regressions
 
 
 def images_equal(a, b):
@@ -753,17 +777,23 @@ def ensure_baseline(sha, jobs, timer=None, force=False):
         log(f"reusing baseline {root}")
         return root, m, sim_dir, units
     # coverage/ is written by coverage.py map and costs far more to rebuild; keep it.
+    (root / "manifest.json").unlink(missing_ok=True)
     for d in ("units", "apis"):
         shutil.rmtree(root / d, ignore_errors=True)
     root.mkdir(parents=True, exist_ok=True)
-    m = {"sha": sha, "simulator_version": read_text(sim_dir / "version.txt"), "harness_sha": bundle.harness_sha(),
+    m = {"sha": sha, "simulator_version": sim_version(sim_dir), "harness_sha": bundle.harness_sha(),
          "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "units": {}}
     ok = bundle.run_units(sim_dir, units, root, "headless", jobs)
+    if not any(ok.values()):
+        # Every head unit would compare against "failed on base", so the gate could never fire.
+        raise RuntimeError(f"no unit completed on {sha[:9]}; not recording the baseline "
+                           f"(logs: {root}/units/*/headless.log)")
     m["units"] = {i: {"headless_ok": v, "graphical_ok": None} for i, v in ok.items()}
-    bundle.write_manifest(root, m)
     timer and timer.done("baseline headless")
     apis.run(sim_dir, fw_dir / bundle.FW_VECTORS, root / "apis")
     timer and timer.done("baseline apis")
+    # The manifest marks the bundle complete, so a recording that died halfway is redone next time.
+    bundle.write_manifest(root, m)
     return root, m, sim_dir, units
 
 
@@ -789,17 +819,89 @@ def cmd_baseline(args):
     print(root)
 
 
-def select_units(base_sha, head, units):
-    """(unit ids to run, unreached changed functions or None, note for the report)."""
-    try:
-        import coverage
-    except ImportError:
-        coverage = None
-    if coverage is None or not (bundle.bundle_dir(base_sha) / "coverage" / "map.json").exists():
-        return {u["id"] for u in units}, None, "all (no coverage map)"
-    r = coverage.select(base_sha, head)
-    note = f"coverage, {r['changed_functions']} changed functions"
-    return set(r["units"]), [f"{u['file']}:{u['lines'][0]} {u['function']}" for u in r["unreached"]], note
+def select_units(base_sha, head):
+    """coverage.select for the diff, or None without a map for the merge-base."""
+    # Imported here: coverage imports this module.
+    import coverage
+    if not (bundle.bundle_dir(base_sha) / "coverage" / "map.json").exists():
+        return None
+    return coverage.select(base_sha, head)
+
+
+def unreached_note(unreached, unmapped):
+    """Summary of changed code with no unit known to run it. Says "none" only when the coverage map
+    saw the whole diff: C, protos, token lists and build files have no coverage."""
+    if unreached is None:
+        return "n/a (no coverage map for the merge-base)"
+    s = ", ".join(f"`{f}`" for f in unreached)
+    if not unmapped:
+        return s or "none"
+    return ((s + "; " if s else "no mapped Rust function; ") + f"**{len(unmapped)} changed file(s) outside the "
+            "coverage map**, no unit known to reach them: " + ", ".join(f"`{f}`" for f in unmapped))
+
+
+def verdict(units, base_apis, head_apis):
+    """Why the PR fails the gate, empty if it passes. Takes pr.json's units, base_apis and apis.
+    Only regressions against the merge-base count: changed screens and expectation mismatches are
+    evidence for the reviewer, expectations get promoted after the firmware PR merges."""
+    reasons = [f"{uid}: completed on base, fails on head" + (f" ({u['head_error']})" if u.get("head_error") else "")
+               for uid, u in sorted(units.items()) if u["base_ok"] and not u["head_ok"]]
+    # Only the run with head's own vectors gates. The API repos' committed copies assert the screens
+    # of the firmware they were synced from, so they fail on any PR that changes one (drift).
+    for suite, modes in head_apis["suites"].items():
+        if err := modes.get("firmware", {}).get("error"):
+            reasons.append(f"{suite} (firmware vectors): suite error on head: {err}")
+    reasons += [f"{suite} (firmware vectors): newly failing on head: " + ", ".join(tests)
+                for suite, tests in api_newly_failing(base_apis, head_apis, "firmware").items()]
+    return reasons
+
+
+def api_newly_failing(base_apis, head_apis, mode):
+    """{suite: tests} that passed on base and fail on head, for one vector mode."""
+    base_suites = (base_apis or {}).get("suites", {})
+    bv, hv = (base_apis or {}).get("simulator"), head_apis.get("simulator")
+    out = {}
+    for suite, modes in head_apis["suites"].items():
+        r, b = modes.get(mode) or {}, base_suites.get(suite, {}).get(mode) or {}
+        # Bundles recorded before results listed passing tests only have the failing ones.
+        if "passing" in b:
+            was = {api_test_key(t, bv) for t in b["passing"]}
+            newly = [t for t in r.get("failing", []) if api_test_key(t, hv) in was]
+        else:
+            was = {api_test_key(t, bv) for t in b.get("failing", [])}
+            newly = [t for t in r.get("failing", []) if api_test_key(t, hv) not in was]
+        if newly:
+            out[suite] = newly
+    return out
+
+
+def api_test_key(name, simulator):
+    """API test name without the simulator version: api-go and api-ts put it into test names, so a
+    PR that bumps the version would otherwise rename every test and hide its regressions."""
+    m = re.search(r"\d+\.\d+\.\d+", simulator or "")
+    return name.replace(simulator, "<simulator>").replace(m[0], "<version>") if m else name
+
+
+def unit_error(unit_dir):
+    """Short reason a headless run failed: the runner's (timeout, crash) or the first failing step."""
+    meta = unit_dir / "meta.json"
+    err = json.loads(meta.read_text()).get("headless_error") if meta.exists() else None
+    return err or next((r.splitlines()[0][:160] for r in results(unit_dir).values() if r != "ok"), None)
+
+
+def unit_path(u):
+    """Scenario file of a promotable unit, relative to the harness checkout (pr.json travels from CI)."""
+    return str(Path(u["path"]).resolve().relative_to(E2E_DIR)) if u.get("path") else None
+
+
+def promote_path(p):
+    """Local file for a pr.json unit path; only files under this checkout's scenarios/ are written."""
+    scenarios = (E2E_DIR / "scenarios").resolve()
+    # An absolute path (pr.json from before paths were relative) survives the join unchanged.
+    full = (E2E_DIR / p).resolve()
+    if not full.is_relative_to(scenarios) or full.suffix != ".json":
+        raise ValueError(f"{p}: not a scenario file under {scenarios}")
+    return full
 
 
 def cmd_pr(args):
@@ -819,13 +921,13 @@ def cmd_pr(args):
     by_id = {u["id"]: u for u in head_units}
     timer.done("head build")
 
-    sel, unreached, sel_note = select_units(base_sha, args.head, head_units)
-    if args.units:
-        sel |= matching(head_units, args.units)
-        sel_note += " + --units " + " ".join(args.units)
-    globbed = matching(head_units, args.graphical)
-    run = [u for u in head_units if u["id"] in sel | globbed]
-    head_ok = bundle.run_units(head_sim, run, out / "head", "headless", args.jobs)
+    # Every unit runs headless: lane B checks all of them, and coverage cannot see C, protos or
+    # token lists. Coverage only reports changed code no unit reaches. It does not pick graphical
+    # runs either: a wide diff selects every unit (88 of 88 for one release), ~25 min of frames for
+    # screens whose text did not change.
+    cov = select_units(base_sha, args.head)
+    picked = matching(head_units, args.graphical)
+    head_ok = bundle.run_units(head_sim, head_units, out / "head", "headless", args.jobs)
     timer.done("head headless")
 
     def unit_dirs(uid):
@@ -835,7 +937,7 @@ def cmd_pr(args):
     # One firmware change usually shows up identically in many units (a reworded warning hits
     # every vector that triggers it); evidence for one of them is evidence for all.
     groups = {}
-    for u in run:
+    for u in head_units:
         b, h = unit_dirs(u["id"])
         lb, lh = screen_lines(load_screens(b)), screen_lines(load_screens(h))
         ok_b = m["units"].get(u["id"], {}).get("headless_ok")
@@ -845,8 +947,8 @@ def cmd_pr(args):
             groups.setdefault(key, []).append(u["id"])
     same_as = {i: ids[0] for ids in groups.values() for i in ids[1:]}
     changed = {i for ids in groups.values() for i in ids}
-    new = {u["id"] for u in run} - set(m["units"])
-    graphical = (changed - set(same_as)) | new | globbed
+    new = set(by_id) - set(m["units"])
+    graphical = (changed - set(same_as)) | new | picked
     baseline_graphical(root, m, base_sim, base_units, graphical, args.jobs)
     bundle.run_units(head_sim, [by_id[i] for i in sorted(graphical)], out / "head", "graphical", args.jobs)
     # Frames can differ while the text does not (layout, fonts), but also by capture timing (a toast
@@ -863,16 +965,9 @@ def cmd_pr(args):
             shutil.copytree(b, out / "base" / "units" / b.name, dirs_exist_ok=True)
     timer.done("graphical")
 
-    head_version = read_text(head_sim / "version.txt")
-    expectations = {}
-    try:
-        import expect
-    except ImportError:
-        expect = None
-    if expect:
-        for u in run:
-            if u.get("expect"):
-                expectations[u["id"]] = expect.check(u, load_screens(unit_dirs(u["id"])[1]), head_version)
+    head_version = sim_version(head_sim)
+    expectations = {u["id"]: expect.check(u, load_screens(unit_dirs(u["id"])[1]), head_version)
+                    for u in head_units if u.get("expect")}
     api_results = apis.run(head_sim, head_fw / bundle.FW_VECTORS, out / "apis")
     timer.done("lane B")
 
@@ -881,27 +976,34 @@ def cmd_pr(args):
                  "harness_sha": m.get("harness_sha")},
         "head": {"ref": args.head, "sha": head_sha, "simulator_version": head_version,
                  "source": read_text(head_sim / "source.txt"), "harness_sha": bundle.harness_sha()},
-        "selection": sel_note,
-        "unreached": unreached,
+        "graphical_globs": args.graphical,
+        "unreached": [f"{u['file']}:{u['lines'][0]} {u['function']}" for u in cov["unreached"]] if cov else None,
+        "unmapped": cov["unmapped"] if cov else None,
         "units": {u["id"]: {
-            "slug": bundle.slug(u["id"]), "kind": u["kind"], "path": u.get("path"),
+            "slug": bundle.slug(u["id"]), "kind": u["kind"], "path": unit_path(u),
             "status": "new" if u["id"] in new else "changed" if u["id"] in changed
             else "frames-only" if u["id"] in frames_only else "unchanged",
             "base_ok": m["units"].get(u["id"], {}).get("headless_ok"), "head_ok": head_ok[u["id"]],
+            "head_error": None if head_ok[u["id"]] else unit_error(unit_dirs(u["id"])[1]),
             "graphical": u["id"] in graphical, "same_as": same_as.get(u["id"]), "expect": expectations.get(u["id"]),
-        } for u in run},
+        } for u in head_units},
         "removed": sorted(set(m["units"]) - set(by_id)),
         "base_apis": json.loads((root / "apis" / "results.json").read_text())
         if (root / "apis" / "results.json").exists() else None,
         "apis": api_results,
         "timings": timer.phases,
     }
+    pr["verdict"] = verdict(pr["units"], pr["base_apis"], pr["apis"])
     (out / "pr.json").write_text(json.dumps(pr, indent=2))
     pr_report(out)
     timer.done("report")
     pr["timings"] = timer.phases
     (out / "pr.json").write_text(json.dumps(pr, indent=2))
     log(f"timings: {timer.phases}")
+    for r in pr["verdict"]:
+        log(f"regression: {r}")
+    log("verdict: " + (f"{len(pr['verdict'])} regression(s)" if pr["verdict"] else "no regressions"))
+    return 1 if pr["verdict"] else 0
 
 
 def api_cell(r):
@@ -935,16 +1037,26 @@ def pr_report(out):
           f"| harness | `{short_sha(base['harness_sha'])}` | `{short_sha(head['harness_sha'])}` |", ""]
     if base["harness_sha"] != head["harness_sha"]:
         md += ["*The baseline was recorded with another harness revision; harness changes can show up as diffs.*", ""]
+    md += ["## Verdict", ""]
+    if pr["verdict"]:
+        md += [f"**REGRESSION**: {len(pr['verdict'])} reason(s), the run exits 1.", "",
+               *[f"- {r}" for r in pr["verdict"]], ""]
+    else:
+        md += ["**No regressions**: every unit and API test that passed on the merge-base passes on head.", ""]
+    drift = api_newly_failing(pr["base_apis"], pr["apis"], "committed")
+    md += [f"Not gating, for review: {len(by['changed'])} changed and {len(by['new'])} new unit(s), "
+           f"{exp_n['fail']} expectation mismatch(es) (promote after the firmware PR merges)"
+           + (f", {sum(map(len, drift.values()))} API test(s) newly failing with the API repos' committed "
+              f"vectors ({', '.join(drift)}: sync their vector copies after the merge)" if drift else "") + ".", ""]
     md += ["## Summary", "",
-           f"- **Units**: {len(units)} run (selection: {pr['selection']}), {len(by['changed'])} changed "
+           f"- **Units**: {len(units)} run headless, {len(by['changed'])} changed "
            f"({sum(not units[i].get('same_as') for i in by['changed'])} distinct), "
            f"{len(by['new'])} new, {len(by['frames-only'])} with graphical-only differences, "
            f"{len(failed)} failed on head ({len(newly)} newly)"
            + (f", {len(pr['removed'])} removed" if pr["removed"] else ""),
-           f"- **Expectations**: {exp_n['pass']} pass, {exp_n['fail']} fail, {exp_n['no-expectation']} without "
+           f"- **Expectations** (not gating): {exp_n['pass']} pass, {exp_n['fail']} fail, {exp_n['no-expectation']} without "
            f"expectation for this version, {len(units) - len(exp)} units without expectations",
-           "- **Unreached changed functions**: " + ("n/a (no coverage map)" if pr["unreached"] is None
-                                                    else (", ".join(f"`{f}`" for f in pr["unreached"]) or "none")),
+           "- **Unreached changed functions**: " + unreached_note(pr["unreached"], pr.get("unmapped")),
            "- **Timings**: " + ", ".join(f"{k} {v}s" for k, v in pr["timings"].items()), ""]
 
     suites = pr["apis"]["suites"]
@@ -1013,7 +1125,6 @@ def pr_report(out):
 
 
 def cmd_promote(args):
-    import expect
     out = Path(args.dir)
     pr = json.loads((out / "pr.json").read_text())
     for uid in args.units:
@@ -1022,8 +1133,12 @@ def cmd_promote(args):
             sys.exit(f"{uid}: not in {out / 'pr.json'}")
         if not u.get("path"):
             sys.exit(f"{uid}: only scenario units can be promoted; vector expectations live in the firmware repo")
+        try:
+            path = promote_path(u["path"])
+        except ValueError as e:
+            sys.exit(f"{uid}: {e}")
         screens = load_screens(out / "head/units" / u["slug"])
-        expect.promote(u["path"], screens, pr["head"]["simulator_version"])
+        expect.promote(path, screens, pr["head"]["simulator_version"])
         log(f"promoted {uid} for {pr['head']['simulator_version']}")
 
 
@@ -1052,8 +1167,6 @@ def main():
             b.add_argument("--base", required=True, help="firmware ref; its merge-base with head keys the bundle")
             b.add_argument("--head", required=True, help="firmware ref or WORKTREE")
             b.add_argument("--out", required=True)
-            b.add_argument("--units", nargs="+", action="extend", default=[], metavar="GLOB",
-                           help="unit id globs to run headless in addition to the selection")
         b.add_argument("--graphical", "--graphical-units", nargs="+", action="extend", default=[], metavar="GLOB",
                        help="unit id globs to also run on the graphical simulator")
         b.add_argument("-j", "--jobs", type=int, default=4, help="units in parallel (one netns + X display each)")
@@ -1081,27 +1194,42 @@ def main():
     rb.add_argument("--display", default=os.environ.get("E2E_DISPLAY", ":71"), help="X display for the simulator")
     rb.add_argument("--browser-display", default=":73", help="X display for Chromium")
     args = p.parse_args()
+    # Exit codes: 0 clean, 1 regression (per command), 2 the harness itself failed.
+    try:
+        rc = dispatch(args)
+    except SystemExit as e:
+        if isinstance(e.code, str):  # sys.exit("message"): an error the harness diagnosed
+            log(e.code)
+            sys.exit(2)
+        raise
+    except Exception:
+        traceback.print_exc()
+        sys.exit(2)
+    sys.exit(rc or 0)
+
+
+def dispatch(args):
     if args.cmd == "compare":
-        cmd_compare(args)
-    elif args.cmd == "wc":
+        return cmd_compare(args)
+    if args.cmd == "wc":
         from wc import flow
-        flow.cmd_wc(args)
-    elif args.cmd == "rabby":
+        return flow.cmd_wc(args)
+    if args.cmd == "rabby":
         from rabby import rabby_e2e
-        rabby_e2e.cmd_rabby(args)
-    elif args.cmd == "wallet-compare":
-        cmd_wallet_compare(args)
-    elif args.cmd == "device":
+        return rabby_e2e.cmd_rabby(args)
+    if args.cmd == "wallet-compare":
+        return cmd_wallet_compare(args)
+    if args.cmd == "device":
         ensure_driver()
-        cmd_device(args)
-    elif args.cmd == "baseline":
-        cmd_baseline(args)
-    elif args.cmd == "pr":
-        cmd_pr(args)
-    elif args.cmd == "promote":
-        cmd_promote(args)
-    else:
-        report(args.dir)
+        meta = cmd_device(args)
+        return 1 if False in (meta["headless_ok"], meta["graphical_ok"]) else 0
+    if args.cmd == "baseline":
+        return cmd_baseline(args)
+    if args.cmd == "pr":
+        return cmd_pr(args)
+    if args.cmd == "promote":
+        return cmd_promote(args)
+    return report(args.dir)
 
 
 if __name__ == "__main__":
