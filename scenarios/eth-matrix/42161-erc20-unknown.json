@@ -1,0 +1,49 @@
+{
+  "expect": [
+    {
+      "min_version": "9.28.0",
+      "max_version_exclusive": null,
+      "screens": [
+        {
+          "step": "erc20-unknown",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "",
+            "BODY": "Sign transaction on\n\nArbitrum One"
+          }
+        },
+        {
+          "step": "erc20-unknown",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Token\ncontract",
+            "BODY": "0x af88 d065 e77c 8cC2 2393 27C5 EDb3 A432 268e 5831"
+          }
+        },
+        {
+          "step": "erc20-unknown",
+          "kind": "CONFIRM TRANSACTION ADDRESS",
+          "fields": {
+            "AMOUNT": "Unknown token",
+            "ADDRESS": "0x E6CE 0a09 2A99 700C D4cc CcBb 1fED c39C f53E 6330"
+          }
+        },
+        {
+          "step": "erc20-unknown",
+          "kind": "CONFIRM TRANSACTION FEE",
+          "fields": {
+            "AMOUNT": "Unknown amount",
+            "FEE": "0.00195 ETH"
+          }
+        },
+        {
+          "step": "erc20-unknown",
+          "kind": "STATUS",
+          "fields": {
+            "TITLE": "Transaction\nconfirmed"
+          }
+        }
+      ]
+    }
+  ]
+}

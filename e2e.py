@@ -6,11 +6,13 @@
 """BitBox simulator e2e: run scenarios against base/head firmware and report the device diff.
 
   e2e.py baseline <ref> [--graphical <glob>...] [-j N]       record the bundle for a firmware commit
-  e2e.py pr --base <ref> --head <ref|WORKTREE> --out <dir> [--graphical <glob>...] [-j N]
+  e2e.py pr --base <ref> --head <ref|WORKTREE> --out <dir> [--graphical <glob>...] [--units <glob>...] [-j N]
   e2e.py promote <pr-out-dir> <unit-id>...                    head screens become expectations
   e2e.py compare --scenario scenarios/x.json --base <ref> --head <ref|WORKTREE> --out <dir>
   e2e.py device  --scenario scenarios/x.json --sim-dir <dir> --out <dir>/<side>
   e2e.py report  <dir>
+  e2e.py wc --base <app-ref> --head <app-ref> --out <dir> [--firmware <ref>]   WalletConnect flow (wc/)
+  e2e.py rabby --base <fw-ref> --head <fw-ref> --out <dir> [--rabby-ref v0.94.15]  Rabby extension flow (rabby/)
 
 Each side records two views of the same scenario:
   headless/  C simulator, auto-accepts everything, prints every screen as text (exact, diffable)
@@ -162,6 +164,20 @@ def run_headless(sim_dir, scenario, out):
                 next_step = ev["step"]
         elif tag == "sim":
             parser.feed(line, state["step"])
+    # The driver can exit before the pump thread delivered the simulator's output for its last
+    # request (seen with one-screen steps like eth-address); the simulator logs "Waiting for new
+    # clients" once the driver's connection is gone.
+    while True:
+        try:
+            _, tag, line = q.get(timeout=1)
+        except queue.Empty:
+            break
+        if line is None or tag != "sim":
+            continue
+        combined.append(f"{tag:>13} | {line}")
+        parser.feed(line, state["step"])
+        if line.startswith("Waiting for new clients"):
+            break
     drv.wait(10)
     sim.terminate()
     try:
@@ -328,9 +344,16 @@ def cmd_compare(args):
         shutil.rmtree(out)
     out.mkdir(parents=True)
     shutil.copy(args.scenario, out / "scenario.json")
-    for side, ref in (("base", args.base), ("head", args.head)):
-        cmd_device(argparse.Namespace(scenario=args.scenario, sim_dir=build_sim(ref), out=str(out / side),
-                                      label=f"{side}: {ref}", no_graphical=args.no_graphical))
+    sims = {"base": build_sim(args.base), "head": build_sim(args.head)}
+    refs = {"base": args.base, "head": args.head}
+    # Both headless runs first: a graphical run leaves 127.0.0.1:15423 in TIME_WAIT, and the C
+    # simulator binds without SO_REUSEADDR, so a headless run right after one fails to start.
+    views = [(True, False)] + ([] if args.no_graphical else [(False, True)])
+    for no_graphical, no_headless in views:
+        for side in ("base", "head"):
+            cmd_device(argparse.Namespace(scenario=args.scenario, sim_dir=sims[side], out=str(out / side),
+                                          label=f"{side}: {refs[side]}", no_graphical=no_graphical,
+                                          no_headless=no_headless))
     report(out)
 
 
@@ -797,6 +820,9 @@ def cmd_pr(args):
     timer.done("head build")
 
     sel, unreached, sel_note = select_units(base_sha, args.head, head_units)
+    if args.units:
+        sel |= matching(head_units, args.units)
+        sel_note += " + --units " + " ".join(args.units)
     globbed = matching(head_units, args.graphical)
     run = [u for u in head_units if u["id"] in sel | globbed]
     head_ok = bundle.run_units(head_sim, run, out / "head", "headless", args.jobs)
@@ -1026,6 +1052,8 @@ def main():
             b.add_argument("--base", required=True, help="firmware ref; its merge-base with head keys the bundle")
             b.add_argument("--head", required=True, help="firmware ref or WORKTREE")
             b.add_argument("--out", required=True)
+            b.add_argument("--units", nargs="+", action="extend", default=[], metavar="GLOB",
+                           help="unit id globs to run headless in addition to the selection")
         b.add_argument("--graphical", "--graphical-units", nargs="+", action="extend", default=[], metavar="GLOB",
                        help="unit id globs to also run on the graphical simulator")
         b.add_argument("-j", "--jobs", type=int, default=4, help="units in parallel (one netns + X display each)")
@@ -1040,9 +1068,27 @@ def main():
     w.add_argument("tests", nargs="+", help="Playwright test files, relative to frontends/web")
     r = sub.add_parser("report")
     r.add_argument("dir")
+    wc = sub.add_parser("wc", help="WalletConnect dapp -> app -> device flow, base vs head (wc/flow.py)")
+    wc.add_argument("--base", required=True, help="bitbox-wallet-app ref")
+    wc.add_argument("--head", required=True, help="bitbox-wallet-app ref")
+    wc.add_argument("--firmware", default="bitbox/master", help="firmware ref (or WORKTREE) for the simulator")
+    wc.add_argument("--out", required=True)
+    rb = sub.add_parser("rabby", help="Rabby extension -> fake BitBoxBridge -> graphical simulator, firmware base vs head (rabby/)")
+    rb.add_argument("--base", required=True, help="firmware ref")
+    rb.add_argument("--head", required=True, help="firmware ref or WORKTREE")
+    rb.add_argument("--out", required=True)
+    rb.add_argument("--rabby-ref", default="v0.94.15", help="Rabby tag/commit, built unpacked from a clone")
+    rb.add_argument("--display", default=os.environ.get("E2E_DISPLAY", ":71"), help="X display for the simulator")
+    rb.add_argument("--browser-display", default=":73", help="X display for Chromium")
     args = p.parse_args()
     if args.cmd == "compare":
         cmd_compare(args)
+    elif args.cmd == "wc":
+        from wc import flow
+        flow.cmd_wc(args)
+    elif args.cmd == "rabby":
+        from rabby import rabby_e2e
+        rabby_e2e.cmd_rabby(args)
     elif args.cmd == "wallet-compare":
         cmd_wallet_compare(args)
     elif args.cmd == "device":

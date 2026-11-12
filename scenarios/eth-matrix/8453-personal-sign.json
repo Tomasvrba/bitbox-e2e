@@ -1,0 +1,42 @@
+{
+  "expect": [
+    {
+      "min_version": "9.28.0",
+      "max_version_exclusive": null,
+      "screens": [
+        {
+          "step": "personal-sign",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Base",
+            "BODY": "0x 416E 8884 0Eb6 353E 4925 2Da2 a2c1 40eA 1f96 9D1a"
+          }
+        },
+        {
+          "step": "personal-sign",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Sign 1/3",
+            "BODY": "Sign in to example.org"
+          }
+        },
+        {
+          "step": "personal-sign",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Sign 2/3",
+            "BODY": "Chain ID: 8453"
+          }
+        },
+        {
+          "step": "personal-sign",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Sign 3/3",
+            "BODY": "Nonce: 32891756"
+          }
+        }
+      ]
+    }
+  ]
+}

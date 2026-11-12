@@ -1,0 +1,9 @@
+{
+  "name": "bitbox-e2e-rabby",
+  "private": true,
+  "type": "module",
+  "description": "Drives the Rabby extension against the BitBox02 graphical simulator (see run.py)",
+  "dependencies": {
+    "playwright": "1.64.0"
+  }
+}

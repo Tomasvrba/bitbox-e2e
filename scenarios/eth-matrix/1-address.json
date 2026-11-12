@@ -1,0 +1,18 @@
+{
+  "expect": [
+    {
+      "min_version": "9.28.0",
+      "max_version_exclusive": null,
+      "screens": [
+        {
+          "step": "address",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Ethereum",
+            "BODY": "0x 416E 8884 0Eb6 353E 4925 2Da2 a2c1 40eA 1f96 9D1a"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,6 +1,8 @@
-"""Units: one scenario run each, from scenarios/*.json and the firmware's BTC test vectors.
+"""Units: one scenario run each, from scenarios/*.json, the generated EVM matrix (eth_matrix.py)
+and the firmware's BTC test vectors.
 
-  units.py <firmware_dir> [ref]     list unit ids
+  units.py <firmware_dir> [ref]                       list unit ids
+  units.py <firmware_dir> [ref] --scenario <unit-id>  print its scenario (for e2e.py compare/device)
 """
 
 import json
@@ -8,6 +10,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+import eth_matrix
 
 VECTORS_PATH = "src/rust/bitbox-test-vectors/testdata/btc-transaction-test-vectors.json"
 # Step name of the signing call in vector units; expect.py compares only its screens.
@@ -48,8 +52,8 @@ def vector_unit(v):
 
 
 def load_units(firmware_dir, scenarios_dir, ref=None):
-    """Scenario units from scenarios_dir, then one unit per BTC vector of the firmware (at `ref`
-    if given, else the working tree)."""
+    """Scenario units from scenarios_dir, the EVM matrix, then one unit per BTC vector of the
+    firmware (at `ref` if given, else the working tree)."""
     units = []
     for p in sorted(Path(scenarios_dir).glob("*.json")):
         sc = json.loads(p.read_text())
@@ -61,6 +65,7 @@ def load_units(firmware_dir, scenarios_dir, ref=None):
             "expect": sc.get("expect"),
             "path": str(p),
         })
+    units += eth_matrix.units(Path(scenarios_dir) / "eth-matrix")
     vectors = read_vectors(firmware_dir, ref)
     for v in (vectors or {}).get("vectors", []):
         # Same skip as bitbox-api-rs: btc_sign_psbt can't pass per-output options or payment
@@ -73,6 +78,19 @@ def load_units(firmware_dir, scenarios_dir, ref=None):
 
 
 if __name__ == "__main__":
+    args = sys.argv[1:]
+    want = None
+    if "--scenario" in args:
+        i = args.index("--scenario")
+        want = args[i + 1]
+        del args[i:i + 2]
     e2e_dir = Path(__file__).resolve().parent
-    for u in load_units(Path(sys.argv[1]), e2e_dir / "scenarios", sys.argv[2] if len(sys.argv) > 2 else None):
-        print(u["id"])
+    all_units = load_units(Path(args[0]), e2e_dir / "scenarios", args[1] if len(args) > 1 else None)
+    if want is None:
+        for u in all_units:
+            print(u["id"])
+    else:
+        u = next((u for u in all_units if u["id"] == want), None)
+        if u is None:
+            sys.exit(f"unknown unit {want}")
+        print(json.dumps(u["scenario"], indent=2))

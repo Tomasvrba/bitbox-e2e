@@ -1,0 +1,41 @@
+{
+  "expect": [
+    {
+      "min_version": "9.28.0",
+      "max_version_exclusive": null,
+      "screens": [
+        {
+          "step": "erc20-known",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "",
+            "BODY": "Sign transaction on\n\nEthereum"
+          }
+        },
+        {
+          "step": "erc20-known",
+          "kind": "CONFIRM TRANSACTION ADDRESS",
+          "fields": {
+            "AMOUNT": "1 USDC",
+            "ADDRESS": "0x E6CE 0a09 2A99 700C D4cc CcBb 1fED c39C f53E 6330"
+          }
+        },
+        {
+          "step": "erc20-known",
+          "kind": "CONFIRM TRANSACTION FEE",
+          "fields": {
+            "AMOUNT": "1 USDC",
+            "FEE": "0.00195 ETH"
+          }
+        },
+        {
+          "step": "erc20-known",
+          "kind": "STATUS",
+          "fields": {
+            "TITLE": "Transaction\nconfirmed"
+          }
+        }
+      ]
+    }
+  ]
+}

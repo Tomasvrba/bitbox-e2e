@@ -110,7 +110,7 @@
     <div class="col"><img class="lcd" src="{{fee-diff.png}}"><div class="lbl">changed</div></div>
   </div>
   <div class="row" style="gap:10px">
-    <span class="pill acc">automatic</span><span class="pill acc">firmware + API + app</span>
+    <span class="pill acc">automatic</span><span class="pill acc">firmware + API + app + Rabby + WalletConnect</span>
     <span class="pill acc">real simulator pixels</span><span class="pill acc">~90 s per PR</span>
   </div>
 </section>
@@ -183,6 +183,79 @@ BODY Fee is 400.0%…</pre>
   </div>
   <div class="row" style="gap:10px"><span class="pill acc">same test step, both refs (from Playwright trace)</span>
     <span class="pill acc">real simulator as the device</span><span class="pill good">1/1 → 1/1 pass</span></div>
+</section>
+
+<!-- rabby -->
+<section class="slide">
+  <div class="k">Rabby v0.94.15, unmodified &middot; ERC-20 transfer on Arbitrum</div>
+  <div class="row" style="gap:28px;align-items:center">
+    <div class="col" style="flex:0 0 auto"><img src="{{rabby-arb.png}}" style="height:430px;border-radius:8px"><div class="lbl"><b>Rabby</b> approval</div></div>
+    <div class="arr">&rarr;</div>
+    <div class="col" style="flex:0 0 600px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <img class="lcd" src="{{rabby-d0.png}}"><img class="lcd" src="{{rabby-d1.png}}">
+        <img class="lcd" src="{{rabby-d2.png}}"><img class="lcd" src="{{rabby-d3.png}}">
+        <img class="lcd" src="{{rabby-d4.png}}"></div>
+      <div class="lbl"><b>device</b>, same step, in order</div>
+    </div>
+  </div>
+  <div class="flow" style="gap:0;font-size:15px">
+    <div class="chip" style="font-size:15px;padding:8px 14px">test dapp</div><div class="arr">&rarr;</div>
+    <div class="chip" style="font-size:15px;padding:8px 14px">Rabby</div><div class="arr">&rarr;</div>
+    <div class="chip" style="font-size:15px;padding:8px 14px">fake BitBoxBridge :8178</div><div class="arr">&rarr;</div>
+    <div class="chip on" style="font-size:15px;padding:8px 14px">simulator</div>
+    <span style="flex:1"></span>
+    <span class="pill acc">ETH &middot; Arbitrum &middot; BNB</span>&nbsp;<span class="pill acc">offline</span>&nbsp;<span class="pill good">3/3 identical</span>
+  </div>
+</section>
+
+<!-- walletconnect -->
+<section class="slide">
+  <div class="k">WalletConnect &middot; dapp &rarr; BitBoxApp &rarr; device &middot; app 3c3644bb2 &rarr; 4305edb6d</div>
+  <div style="display:grid;grid-template-columns:90px auto auto 1fr;gap:14px 18px;align-items:center">
+    <div class="lbl"><b>pairing</b></div>
+    <div class="col" style="flex:none"><img src="{{wc-pair-base.png}}" style="height:150px;border-radius:6px"><div class="lbl"><b>base</b> 5 chains</div></div>
+    <div class="col" style="flex:none"><img src="{{wc-pair-head.png}}" style="height:182px;border-radius:6px;outline:3px solid var(--good)"><div class="lbl"><b>head</b> + BNB, Polygon</div></div>
+    <div></div>
+    <div class="lbl"><b>send on Polygon</b></div>
+    <div class="col" style="flex:none"><img src="{{wc-poly-base.png}}" style="height:215px;border-radius:6px;opacity:.75"><div class="lbl"><b>base</b> never reaches the app</div></div>
+    <div class="col" style="flex:none"><img src="{{wc-poly-head.png}}" style="height:215px;border-radius:6px;outline:3px solid var(--good)"><div class="lbl"><b>head</b> request</div></div>
+    <div class="col">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+        <img class="lcd" src="{{wc-d0.png}}"><img class="lcd" src="{{wc-d1.png}}"><img class="lcd" src="{{wc-d2.png}}">
+        <img class="lcd" src="{{wc-d3.png}}"><img class="lcd" src="{{wc-d4.png}}"><img class="lcd" src="{{wc-d5.png}}"></div>
+      <div class="lbl"><b>head</b> device</div></div>
+  </div>
+</section>
+
+<!-- eth matrix -->
+<section class="slide">
+  <div class="k">EVM chains &middot; 49 device tests &middot; firmware 061fec974 adds a screen</div>
+  <div class="row" style="gap:36px;align-items:center">
+    <div class="col" style="flex:1.1">
+      <div style="display:grid;grid-template-columns:96px repeat(6,1fr);gap:5px;font:12px/1.2 var(--mono)">
+        <div></div><div class="dim">address</div><div class="dim">legacy</div><div class="dim">1559</div><div style="color:#7fd4a3">erc20</div><div class="dim">msg</div><div class="dim">712</div>
+        <div class="dim">ethereum</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell sel" style="background:rgba(47,163,107,.3);border-color:var(--good)"></div><div class="cell"></div><div class="cell"></div>
+        <div class="dim">optimism</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell sel" style="background:rgba(47,163,107,.3);border-color:var(--good)"></div><div class="cell"></div><div class="cell"></div>
+        <div class="dim">bnb</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell sel" style="background:rgba(47,163,107,.3);border-color:var(--good)"></div><div class="cell"></div><div class="cell"></div>
+        <div class="dim">polygon</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell sel" style="background:rgba(47,163,107,.3);border-color:var(--good)"></div><div class="cell"></div><div class="cell"></div>
+        <div class="dim">base</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell sel" style="background:rgba(47,163,107,.3);border-color:var(--good)"></div><div class="cell"></div><div class="cell"></div>
+        <div class="dim">arbitrum</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell sel" style="background:rgba(47,163,107,.3);border-color:var(--good)"></div><div class="cell"></div><div class="cell"></div>
+        <div class="dim">sepolia</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell sel" style="background:rgba(47,163,107,.3);border-color:var(--good)"></div><div class="cell"></div><div class="cell"></div>
+        <div class="dim">123456</div><div class="cell"></div><div class="cell"></div><div class="cell"></div><div class="cell sel" style="background:rgba(47,163,107,.3);border-color:var(--good)"></div><div class="cell"></div><div class="cell"></div>
+      </div>
+      <div class="row" style="gap:8px;margin-top:10px"><span class="pill good">changed: erc20, every chain</span><span class="pill acc">12 s headless</span></div>
+      <div class="lbl" style="margin-top:6px">2 changed functions &rarr; 11 tests selected</div>
+    </div>
+    <div class="col" style="flex:0 0 520px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 12px">
+        <div class="col"><img class="lcd new" src="{{em-op.png}}"><div class="lbl">optimism</div></div>
+        <div class="col"><img class="lcd new" src="{{em-base.png}}"><div class="lbl">base</div></div>
+        <div class="col"><img class="lcd new" src="{{em-arb.png}}"><div class="lbl">arbitrum</div></div>
+        <div class="col"><img class="lcd" src="{{em-unknown-net.png}}"><div class="lbl">chain 123456</div></div>
+      </div>
+    </div>
+  </div>
 </section>
 
 <!-- regression -->
@@ -309,8 +382,8 @@ api-rs: my-branch
   <div class="layers" style="margin-top:30px">
     <div class="layer"><div class="ln">device</div><div class="chip on">screen text</div><div class="chip on">LCD pixels</div><div class="chip next">BitBox03 UI</div></div>
     <div class="layer"><div class="ln">host libraries</div><div class="chip on">api-go</div><div class="chip on">api-rs</div><div class="chip on">api-ts</div></div>
-    <div class="layer"><div class="ln">apps</div><div class="chip on">BitBoxApp</div><div class="chip next">Rabby</div><div class="chip next">WalletConnect dapps</div></div>
-    <div class="layer"><div class="ln">chains</div><div class="chip on">BTC / LTC</div><div class="chip on">ETH</div><div class="chip next">EVM chain matrix</div><div class="chip">Cardano (API suites)</div></div>
+    <div class="layer"><div class="ln">apps</div><div class="chip on">BitBoxApp</div><div class="chip on">Rabby</div><div class="chip on">WalletConnect dapps</div></div>
+    <div class="layer"><div class="ln">chains</div><div class="chip on">BTC / LTC</div><div class="chip on">ETH</div><div class="chip on">8 EVM chains</div><div class="chip">Cardano (API suites)</div></div>
   </div>
   <div class="row" style="gap:10px;margin-top:20px"><span class="pill good">solid: running</span><span class="pill acc">dashed: next</span></div>
 </section>

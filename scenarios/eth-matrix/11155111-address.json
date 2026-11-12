@@ -1,0 +1,18 @@
+{
+  "expect": [
+    {
+      "min_version": "9.28.0",
+      "max_version_exclusive": null,
+      "screens": [
+        {
+          "step": "address",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Sepolia",
+            "BODY": "0x aB0F 4Edd 3F25 9bdA 6c33 A881 84b9 E4B7 4639 Dcc0"
+          }
+        }
+      ]
+    }
+  ]
+}

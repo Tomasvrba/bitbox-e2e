@@ -1,0 +1,106 @@
+{
+  "expect": [
+    {
+      "min_version": "9.28.0",
+      "max_version_exclusive": null,
+      "screens": [
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Sepolia",
+            "BODY": "0x aB0F 4Edd 3F25 9bdA 6c33 A881 84b9 E4B7 4639 Dcc0"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message type",
+            "BODY": "Permit"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Domain (1/4)",
+            "BODY": "name: USD Coin"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Domain (2/4)",
+            "BODY": "version: 2"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Domain (3/4)",
+            "BODY": "chainId: 11155111"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Domain (4/4)",
+            "BODY": "verifyingContract: 0x 1c7d 4b19 6cb0 c7b0 1d74 3fbc 6116 a902 379c 7238"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message (1/5)",
+            "BODY": "owner: 0x 416e 8884 0eb6 353e 4925 2da2 a2c1 40ea 1f96 9d1a"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message (2/5)",
+            "BODY": "spender: 0x 0000 0000 0022 d473 030f 116d dee9 f6b4 3ac7 8ba3"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message (3/5)",
+            "BODY": "value: 1000000"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message (4/5)",
+            "BODY": "nonce: 0"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message (5/5)",
+            "BODY": "deadline: 1893456000"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "",
+            "BODY": "Sign data?"
+          }
+        }
+      ]
+    }
+  ]
+}

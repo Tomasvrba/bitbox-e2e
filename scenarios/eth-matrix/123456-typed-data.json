@@ -1,0 +1,122 @@
+{
+  "expect": [
+    {
+      "min_version": "9.28.0",
+      "max_version_exclusive": null,
+      "screens": [
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Warning",
+            "BODY": "Unknown network\nwith chain ID:\n123456"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Warning",
+            "BODY": "Only proceed if\nyou recognize\nthis chain ID."
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "UNKNOWN",
+            "BODY": "0x 416E 8884 0Eb6 353E 4925 2Da2 a2c1 40eA 1f96 9D1a"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message type",
+            "BODY": "Permit"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Domain (1/4)",
+            "BODY": "name: USD Coin"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Domain (2/4)",
+            "BODY": "version: 2"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Domain (3/4)",
+            "BODY": "chainId: 123456"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Domain (4/4)",
+            "BODY": "verifyingContract: 0x 9c23 d67a ea7b 95d8 0942 e383 6bcd f7e7 08a7 47c1"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message (1/5)",
+            "BODY": "owner: 0x 416e 8884 0eb6 353e 4925 2da2 a2c1 40ea 1f96 9d1a"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message (2/5)",
+            "BODY": "spender: 0x 0000 0000 0022 d473 030f 116d dee9 f6b4 3ac7 8ba3"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message (3/5)",
+            "BODY": "value: 1000000"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message (4/5)",
+            "BODY": "nonce: 0"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Message (5/5)",
+            "BODY": "deadline: 1893456000"
+          }
+        },
+        {
+          "step": "typed-data",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "",
+            "BODY": "Sign data?"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "expect": [
+    {
+      "min_version": "9.28.0",
+      "max_version_exclusive": null,
+      "screens": [
+        {
+          "step": "legacy",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Warning",
+            "BODY": "Unknown network\nwith chain ID:\n123456"
+          }
+        },
+        {
+          "step": "legacy",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Warning",
+            "BODY": "Only proceed if\nyou recognize\nthis chain ID."
+          }
+        },
+        {
+          "step": "legacy",
+          "kind": "CONFIRM TRANSACTION ADDRESS",
+          "fields": {
+            "AMOUNT": "0.0123 ",
+            "ADDRESS": "0x E6CE 0a09 2A99 700C D4cc CcBb 1fED c39C f53E 6330"
+          }
+        },
+        {
+          "step": "legacy",
+          "kind": "CONFIRM TRANSACTION FEE",
+          "fields": {
+            "AMOUNT": "0.01272 ",
+            "FEE": "0.00042 "
+          }
+        },
+        {
+          "step": "legacy",
+          "kind": "STATUS",
+          "fields": {
+            "TITLE": "Transaction\nconfirmed"
+          }
+        }
+      ]
+    }
+  ]
+}

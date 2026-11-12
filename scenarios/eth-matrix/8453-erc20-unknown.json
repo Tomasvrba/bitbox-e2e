@@ -1,0 +1,49 @@
+{
+  "expect": [
+    {
+      "min_version": "9.28.0",
+      "max_version_exclusive": null,
+      "screens": [
+        {
+          "step": "erc20-unknown",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "",
+            "BODY": "Sign transaction on\n\nBase"
+          }
+        },
+        {
+          "step": "erc20-unknown",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "Token\ncontract",
+            "BODY": "0x 8335 89fC D6eD b6E0 8f4c 7C32 D4f7 1b54 bdA0 2913"
+          }
+        },
+        {
+          "step": "erc20-unknown",
+          "kind": "CONFIRM TRANSACTION ADDRESS",
+          "fields": {
+            "AMOUNT": "Unknown token",
+            "ADDRESS": "0x E6CE 0a09 2A99 700C D4cc CcBb 1fED c39C f53E 6330"
+          }
+        },
+        {
+          "step": "erc20-unknown",
+          "kind": "CONFIRM TRANSACTION FEE",
+          "fields": {
+            "AMOUNT": "Unknown amount",
+            "FEE": "0.00195 ETH"
+          }
+        },
+        {
+          "step": "erc20-unknown",
+          "kind": "STATUS",
+          "fields": {
+            "TITLE": "Transaction\nconfirmed"
+          }
+        }
+      ]
+    }
+  ]
+}

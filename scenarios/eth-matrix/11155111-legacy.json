@@ -1,0 +1,41 @@
+{
+  "expect": [
+    {
+      "min_version": "9.28.0",
+      "max_version_exclusive": null,
+      "screens": [
+        {
+          "step": "legacy",
+          "kind": "CONFIRM",
+          "fields": {
+            "TITLE": "",
+            "BODY": "Sign transaction on\n\nSepolia"
+          }
+        },
+        {
+          "step": "legacy",
+          "kind": "CONFIRM TRANSACTION ADDRESS",
+          "fields": {
+            "AMOUNT": "0.0123 SEPETH",
+            "ADDRESS": "0x E6CE 0a09 2A99 700C D4cc CcBb 1fED c39C f53E 6330"
+          }
+        },
+        {
+          "step": "legacy",
+          "kind": "CONFIRM TRANSACTION FEE",
+          "fields": {
+            "AMOUNT": "0.01272 SEPETH",
+            "FEE": "0.00042 SEPETH"
+          }
+        },
+        {
+          "step": "legacy",
+          "kind": "STATUS",
+          "fields": {
+            "TITLE": "Transaction\nconfirmed"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -34,6 +34,8 @@ enum Step {
         value: String,
         data: String,
     },
+    // kebab-case alone would make this `eth-sign1559`.
+    #[serde(rename = "eth-sign-1559", alias = "eth-sign1559")]
     EthSign1559 {
         name: String,
         chain_id: u64,
@@ -51,6 +53,13 @@ enum Step {
         chain_id: u64,
         keypath: String,
         message: String,
+    },
+    // `typed_data` is the EIP-712 JSON object as dapps pass it to eth_signTypedData_v4.
+    EthSignTypedData {
+        name: String,
+        chain_id: u64,
+        keypath: String,
+        typed_data: serde_json::Value,
     },
     // Mirrors bitbox-api-rs tests/test_btc_psbt.rs, so firmware BTC test vectors run unchanged:
     // `registrations`, `force_script_config` and `format_unit` use the vector JSON format.
@@ -285,6 +294,12 @@ async fn run_step(
                 .await?;
             (name.clone(), json!({ "signature": hex::encode(sig) }))
         }
+        Step::EthSignTypedData { name, chain_id, keypath: kp, typed_data } => {
+            let sig = bb
+                .eth_sign_typed_message(*chain_id, &keypath(kp), &typed_data.to_string(), true)
+                .await?;
+            (name.clone(), json!({ "signature": hex::encode(sig) }))
+        }
         Step::BtcSignPsbt { name, coin, psbt, force_script_config, format_unit, .. } => {
             let mut psbt = bitcoin::psbt::Psbt::deserialize(&bytes(psbt)).expect("invalid PSBT");
             let before = signature_count(&psbt);
@@ -308,6 +323,7 @@ fn step_name(step: &Step) -> &str {
         | Step::EthSign { name, .. }
         | Step::EthSign1559 { name, .. }
         | Step::EthSignMessage { name, .. }
+        | Step::EthSignTypedData { name, .. }
         | Step::BtcSignPsbt { name, .. } => name,
     }
 }

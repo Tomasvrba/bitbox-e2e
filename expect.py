@@ -104,7 +104,9 @@ def promote(scenario_path, screens, simulator_version):
     """Store `screens` as the expectation from this version on. An open range starting earlier is
     closed here; an entry starting at exactly this version is replaced."""
     p = Path(scenario_path)
-    sc = json.loads(p.read_text())
+    # Generated units (eth-matrix) get their expectation file on first promote.
+    sc = json.loads(p.read_text()) if p.exists() else {}
+    p.parent.mkdir(parents=True, exist_ok=True)
     v = parse_version(simulator_version)
     vs = ".".join(map(str, v))
     entries = [e for e in sc.get("expect") or [] if e.get("min_version") is None or parse_version(e["min_version"]) != v]

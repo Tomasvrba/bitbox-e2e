@@ -1,0 +1,10 @@
+{
+  "name": "bitbox-e2e-wc-dapp",
+  "private": true,
+  "type": "module",
+  "description": "WalletConnect test dapp for the BitBoxApp e2e flow (see README.md)",
+  "dependencies": {
+    "@walletconnect/sign-client": "2.21.7",
+    "viem": "2.38.0"
+  }
+}
