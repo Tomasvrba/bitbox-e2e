@@ -345,7 +345,7 @@ def wallet_clone(ref):
     """Clean clone of the app at ref. Kept between runs (keyed by sha) to reuse node_modules."""
     sha = subprocess.run(["git", "-C", str(WALLET_REPO), "rev-parse", "--verify", f"{ref}^{{commit}}"],
                          stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
-    src = Path(os.environ["BITBOX_E2E_CACHE"]) / "src" / f"bitbox-wallet-app-{sha}"
+    src = Path(os.environ.get("BITBOX_E2E_CACHE", Path.home() / ".cache" / "bitbox-e2e")) / "src" / f"bitbox-wallet-app-{sha}"
     if not (src / ".git").exists():
         subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(WALLET_REPO), str(src)], check=True)
         subprocess.run(["git", "-C", str(src), "checkout", "-q", "--detach", sha], check=True)
