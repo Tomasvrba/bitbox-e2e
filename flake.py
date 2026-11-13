@@ -7,8 +7,9 @@
 
   flake.py --sim-dir <dir> --out /tmp/e2e-gfx/flake [--runs 10] [--jobs 3] scenarios/*.json [--unit 'btc-vector/*fee*']
 
-Each run is `isolated.sh flake.py one ...` on its own Xvfb display (:91 + slot). A scenario is
-stable when every run produced the same non-setup frame hashes, the sequence the report diffs.
+Each run is `flake.py one ...` (in isolated.sh when the simulator has no --port, see
+bundle.graphical_mode). A scenario is stable when every run produced the same non-setup frame
+hashes, the sequence the report diffs.
 """
 
 import argparse
@@ -26,6 +27,8 @@ from pathlib import Path
 E2E_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(E2E_DIR))
 
+import bundle  # noqa: E402
+
 
 def load_e2e():
     import importlib.util
@@ -39,8 +42,7 @@ def one(args):
     e2e = load_e2e()
     t0 = time.time()
     try:
-        ok = e2e.run_graphical(Path(args.sim_dir), Path(args.scenario), Path(args.out),
-                               os.environ["E2E_DISPLAY"])
+        ok = e2e.run_graphical(Path(args.sim_dir), Path(args.scenario), Path(args.out))
     except Exception as e:  # recorded as a failed run, the batch goes on
         ok = False
         print(f"[flake] {e!r}", file=sys.stderr)
@@ -52,10 +54,9 @@ def scenario_files(args):
     items = [(Path(p).stem, Path(p)) for p in args.scenarios]
     if args.unit:
         import units
-        fw = Path(os.environ.get("BITBOX_FIRMWARE", E2E_DIR.parent / "bitbox02-firmware"))
         udir = Path(args.out) / "units"
         udir.mkdir(parents=True, exist_ok=True)
-        for u in units.load_units(fw, E2E_DIR / "scenarios"):
+        for u in bundle.load_units(bundle.FW):
             if any(fnmatch.fnmatch(u["id"], g) for g in args.unit):
                 name = units.slug(u["id"])
                 (udir / f"{name}.json").write_text(json.dumps(u["scenario"]))
@@ -67,8 +68,11 @@ def batch(args):
     e2e = load_e2e()
     out = Path(args.out)
     jobs = [(name, path, i) for name, path in scenario_files(args) for i in range(args.runs)]
-    slots = list(range(args.jobs))
     lock = threading.Lock()
+    mode = bundle.graphical_mode(args.sim_dir)
+    isolated = [str(E2E_DIR / "isolated.sh")] if mode == "netns" else []
+    workers = 1 if mode == "serial" else args.jobs
+    print(f"graphical runs: {bundle.GRAPHICAL_MODES[mode]}", file=sys.stderr)
 
     def worker():
         while True:
@@ -76,19 +80,15 @@ def batch(args):
                 if not jobs:
                     return
                 name, path, i = jobs.pop(0)
-                slot = slots.pop()
             run_out = out / name / f"{i:02d}"
-            env = dict(os.environ, E2E_DISPLAY=f":{91 + slot}")
             with open(out / name / f"{i:02d}.log", "w") as log:
-                subprocess.run(["nice", str(E2E_DIR / "isolated.sh"), sys.executable, __file__, "one",
+                subprocess.run(["nice", *isolated, sys.executable, __file__, "one",
                                 "--sim-dir", args.sim_dir, "--scenario", str(path), "--out", str(run_out)],
-                               env=env, stdout=log, stderr=subprocess.STDOUT, timeout=400)
-            with lock:
-                slots.append(slot)
+                               stdout=log, stderr=subprocess.STDOUT, timeout=400)
 
     for name, _, _ in jobs:
         (out / name).mkdir(parents=True, exist_ok=True)
-    threads = [threading.Thread(target=worker) for _ in range(args.jobs)]
+    threads = [threading.Thread(target=worker) for _ in range(workers)]
     for t in threads:
         t.start()
     for t in threads:
@@ -131,7 +131,7 @@ def main():
     p.add_argument("--sim-dir", required=True)
     p.add_argument("--out", required=True)
     p.add_argument("--runs", type=int, default=10)
-    p.add_argument("--jobs", type=int, default=3)
+    p.add_argument("--jobs", type=int, default=bundle.JOBS)
     p.add_argument("--unit", action="append", help="unit id glob from units.py, repeatable")
     p.add_argument("scenarios", nargs="*")
     args = p.parse_args()

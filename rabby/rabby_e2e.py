@@ -29,10 +29,10 @@ RABBY_DIR = Path(__file__).resolve().parent
 E2E_DIR = RABBY_DIR.parent
 sys.path.insert(0, str(E2E_DIR))
 
+import bundle  # noqa: E402
 import e2e  # noqa: E402  (pixel_diff, md_to_html, build_sim)
 
-CACHE = Path(os.environ.get("BITBOX_E2E_CACHE", Path.home() / ".cache" / "bitbox-e2e"))
-RABBY_REPO = Path(os.environ.get("BITBOX_RABBY", E2E_DIR.parent / "Rabby"))
+RABBY_REPO = Path(os.environ.get("BITBOX_RABBY", bundle.WORKSPACE / "Rabby"))
 DEFAULT_REF = "v0.94.15"
 SETUP_STEPS = {"boot", "pairing"}
 
@@ -58,7 +58,7 @@ def ensure_rabby(ref):
     never touched). Cached by ref name; a build takes ~10 min."""
     sha = subprocess.run(["git", "-C", str(RABBY_REPO), "rev-parse", "--verify", f"{ref}^{{commit}}"],
                          stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
-    src = CACHE / "src" / f"rabby-{re.sub(r'[^A-Za-z0-9._-]', '_', ref)}"
+    src = bundle.CACHE / "src" / f"rabby-{re.sub(r'[^A-Za-z0-9._-]', '_', ref)}"
     stamp = src / "dist" / ".e2e-built"
     if stamp.exists() and stamp.read_text().strip() == sha:
         return src / "dist"
@@ -74,7 +74,12 @@ def ensure_rabby(ref):
 
 
 def ensure_tools():
-    """Everything the netns run needs that would otherwise hit the network."""
+    """Everything the netns run needs that would otherwise hit the network. Fails right away where
+    the flow can't run at all."""
+    bundle.use_node()
+    # run.py listens on fixed ports (bridge, anvils, proxy, dapp) and must stay offline.
+    if not bundle.namespaces():
+        raise SystemExit("the Rabby flow runs in isolated.sh, which needs network namespaces; unavailable here")
     if not (RABBY_DIR / "node_modules" / "playwright").exists():
         subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=RABBY_DIR, check=True, stdout=sys.stderr)
     subprocess.run(["npx", "playwright", "install", "chromium"], cwd=RABBY_DIR, check=True, stdout=sys.stderr)
@@ -83,15 +88,15 @@ def ensure_tools():
                 ["uv", "run", "--no-project", "--with", "mitmproxy==11.0.2", "mitmdump", "--version"],
                 [str(RABBY_DIR / "run.py"), "--help"]):
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
-    anvil = Path(os.environ.get("BITBOX_E2E_TOOLS", Path.home() / ".local/share/bitbox-e2e/tools")) / "foundry/bin/anvil"
+    anvil = bundle.TOOLS / "foundry" / "bin" / "anvil"
     if not anvil.exists():
         raise SystemExit(f"anvil missing at {anvil}: download foundry_stable_linux_amd64.tar.gz from "
                          "github.com/foundry-rs/foundry/releases and unpack it into that bin/ directory")
 
 
-def run_flow(sim_dir, dist, out, display, browser_display, record_sock=None):
+def run_flow(sim_dir, dist, out, record_sock=None):
     cmd = [str(E2E_DIR / "isolated.sh"), str(RABBY_DIR / "run.py"), "--sim-dir", str(sim_dir),
-           "--rabby-dist", str(dist), "--out", str(out), "--display", display, "--browser-display", browser_display]
+           "--rabby-dist", str(dist), "--out", str(out)]
     if record_sock:
         cmd += ["--record-sock", record_sock]
     log(f"flow: {out}")
@@ -125,7 +130,7 @@ def cmd_record(args):
              subprocess.Popen([sys.executable, str(RABBY_DIR / "egress.py"), "unix-to-tcp", sock, f"127.0.0.1:{port}"])]
     try:
         time.sleep(3)
-        ok = run_flow(sim_dir, dist, out / "run", args.display, args.browser_display, record_sock=sock)
+        ok = run_flow(sim_dir, dist, out / "run", record_sock=sock)
     finally:
         for p in procs:
             p.terminate()
@@ -146,7 +151,7 @@ def cmd_rabby(args):
     out.mkdir(parents=True)
     failed = []
     for side in ("base", "head"):
-        if not run_flow(sims[side], dist, out / side, args.display, args.browser_display):
+        if not run_flow(sims[side], dist, out / side):
             failed.append(side)
         m = json.loads((out / side / "meta.json").read_text()) if (out / side / "meta.json").exists() else {}
         m["label"] = f"{side}: {getattr(args, side)}"
@@ -178,7 +183,7 @@ def cmd_repeat(args):
     runs = []
     for i in range(args.n):
         t = time.time()
-        ok = run_flow(sim_dir, dist, out / f"run{i}", args.display, args.browser_display)
+        ok = run_flow(sim_dir, dist, out / f"run{i}")
         runs.append({"ok": ok, "seconds": round(time.time() - t, 1), "steps": frame_seq(out / f"run{i}")})
     ref = runs[0]["steps"]
     steps = list(dict.fromkeys(s for r in runs for s in r["steps"]))
@@ -292,8 +297,6 @@ def report(out):
 
 def add_common(p):
     p.add_argument("--rabby-ref", default=DEFAULT_REF, help="Rabby git ref (tag), built from a clone of $BITBOX_RABBY")
-    p.add_argument("--display", default=os.environ.get("E2E_DISPLAY", ":71"), help="X display for the simulator")
-    p.add_argument("--browser-display", default=":73", help="X display for Chromium")
 
 
 def main():

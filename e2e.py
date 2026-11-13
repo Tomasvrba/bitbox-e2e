@@ -29,7 +29,6 @@ import os
 import queue
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import threading
@@ -46,7 +45,6 @@ import expect  # noqa: E402
 
 # E2E_DRIVER points at a prebuilt driver and skips the cargo build (CI artifacts, parallel runs).
 DRIVER = Path(os.environ.get("E2E_DRIVER", E2E_DIR / "driver" / "target" / "release" / "bitbox-e2e-driver"))
-SIM_PORT = 15423  # simulator-graphical cannot change it, so both views use it, sequentially.
 
 
 def log(msg):
@@ -62,24 +60,11 @@ def ensure_driver():
     os.environ["E2E_DRIVER"] = str(DRIVER)
 
 
-def wait_port_free(port, timeout_s=30):
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        with socket.socket() as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.bind(("127.0.0.1", port))
-                return
-            except OSError:
-                time.sleep(0.2)
-    raise RuntimeError(f"port {port} still busy; is another simulator running?")
-
-
 QUIET_S = 0.3
 
 
-def start_driver(scenario, stderr):
-    return subprocess.Popen([str(DRIVER), str(scenario), f"127.0.0.1:{SIM_PORT}"],
+def start_driver(scenario, port, stderr):
+    return subprocess.Popen([str(DRIVER), str(scenario), f"127.0.0.1:{port}"],
                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr, text=True,
                             env=dict(os.environ, E2E_HANDSHAKE="1"))
 
@@ -119,22 +104,28 @@ class ScreenParser:
 
 def run_headless(sim_dir, scenario, out):
     out.mkdir(parents=True, exist_ok=True)
-    wait_port_free(SIM_PORT)
     # The headless sim keeps no state unless FAKE_MEMORY_FILEPATH is set; it boots unseeded.
     env = {k: v for k, v in os.environ.items() if k != "FAKE_MEMORY_FILEPATH"}
     sim = drv = None
     combined, events = [], []
     parser = ScreenParser()
     try:
-        sim = subprocess.Popen(["stdbuf", "-oL", str(sim_dir / "simulator"), "--port", str(SIM_PORT)],
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
-        q = queue.Queue()
-        threading.Thread(target=pump, args=(sim.stdout, "sim", q), daemon=True).start()
-        while True:
-            _, _, line = q.get(timeout=20)
-            if line is None or line.startswith("Listening on port"):
+        # Each run gets its own port, so units run side by side without network namespaces. Another
+        # process can take the port before the simulator binds it; then it exits, try another.
+        for _ in range(3):
+            port = bundle.free_port()
+            sim = subprocess.Popen(["stdbuf", "-oL", str(sim_dir / "simulator"), "--port", str(port)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+            q = queue.Queue()
+            threading.Thread(target=pump, args=(sim.stdout, "sim", q), daemon=True).start()
+            while True:
+                _, _, line = q.get(timeout=20)
+                if line is None or line.startswith("Listening on port") or line.startswith("ERROR binding"):
+                    break
+            if line is None or not line.startswith("ERROR binding"):
                 break
-        drv = start_driver(scenario, stderr=subprocess.PIPE)
+            sim.wait(5)
+        drv = start_driver(scenario, port, stderr=subprocess.PIPE)
         threading.Thread(target=pump, args=(drv.stdout, "driver", q), daemon=True).start()
         threading.Thread(target=pump, args=(drv.stderr, "driver-stderr", q), daemon=True).start()
 
@@ -204,22 +195,25 @@ def run_headless(sim_dir, scenario, out):
 
 # --- graphical ------------------------------------------------------------------------------------
 
-def run_graphical(sim_dir, scenario, out, disp):
+def run_graphical(sim_dir, scenario, out):
     import gsim
 
     out.mkdir(parents=True, exist_ok=True)
     for f in out.glob("*.png"):
         f.unlink()
-    wait_port_free(SIM_PORT)
+    # Without --port the simulator binds 15423, alone on the host or in its own network namespace.
+    port = bundle.free_port() if bundle.takes_port(sim_dir) else None
+    if port is None:
+        bundle.wait_port_free(bundle.SIM_PORT, reuseaddr=True)
     memdir = out / "fake-memory"
     shutil.rmtree(memdir, ignore_errors=True)
     memdir.mkdir()
-    xvfb = gsim.Xvfb(disp, out / "xvfb.log")
+    xvfb = gsim.Xvfb(out / "xvfb.log")
     sim = drv = None
     frames, events = [], []
     try:
-        sim = gsim.GraphicalSim(str(sim_dir / "simulator-graphical"), disp, str(out / "simulator.log"),
-                                str(memdir))
+        sim = gsim.GraphicalSim(str(sim_dir / "simulator-graphical"), xvfb.disp, str(out / "simulator.log"),
+                                str(memdir), port)
         step = "boot"
 
         def capture(h):
@@ -232,7 +226,7 @@ def run_graphical(sim_dir, scenario, out, disp):
 
         def spawn():
             q = queue.Queue()
-            d = start_driver(scenario, stderr=subprocess.STDOUT)
+            d = start_driver(scenario, sim.port, stderr=subprocess.STDOUT)
             threading.Thread(target=pump, args=(d.stdout, "driver", q), daemon=True).start()
             return d, q
 
@@ -329,8 +323,7 @@ def cmd_device(args):
     if not getattr(args, "no_headless", False):
         meta["headless_ok"] = run_headless(sim_dir, Path(args.scenario), out / "headless")
     if not args.no_graphical:
-        meta["graphical_ok"] = run_graphical(sim_dir, Path(args.scenario), out / "graphical",
-                                             os.environ.get("E2E_DISPLAY", ":77"))
+        meta["graphical_ok"] = run_graphical(sim_dir, Path(args.scenario), out / "graphical")
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     return meta
 
@@ -360,22 +353,15 @@ def cmd_compare(args):
         shutil.rmtree(out)
     out.mkdir(parents=True)
     shutil.copy(args.scenario, out / "scenario.json")
-    sims = {"base": build_sim(args.base), "head": build_sim(args.head)}
-    refs = {"base": args.base, "head": args.head}
-    # Both headless runs first: a graphical run leaves 127.0.0.1:15423 in TIME_WAIT, and the C
-    # simulator binds without SO_REUSEADDR, so a headless run right after one fails to start.
-    views = [(True, False)] + ([] if args.no_graphical else [(False, True)])
-    for no_graphical, no_headless in views:
-        for side in ("base", "head"):
-            cmd_device(argparse.Namespace(scenario=args.scenario, sim_dir=sims[side], out=str(out / side),
-                                          label=f"{side}: {refs[side]}", no_graphical=no_graphical,
-                                          no_headless=no_headless))
+    for side, ref in (("base", args.base), ("head", args.head)):
+        cmd_device(argparse.Namespace(scenario=args.scenario, sim_dir=build_sim(ref), out=str(out / side),
+                                      label=f"{side}: {ref}", no_graphical=args.no_graphical, no_headless=False))
     report(out)
 
 
 # --- wallet app (Playwright) ----------------------------------------------------------------------
 
-WALLET_REPO = Path(os.environ.get("BITBOX_WALLET_APP", E2E_DIR.parent / "bitbox-wallet-app"))
+WALLET_REPO = Path(os.environ.get("BITBOX_WALLET_APP", bundle.WORKSPACE / "bitbox-wallet-app"))
 # Volatile device screens in app tests: random pairing codes and the current time.
 VOLATILE_TITLES = {"Pairing code", "Is now?"}
 
@@ -384,7 +370,7 @@ def wallet_clone(ref):
     """Clean clone of the app at ref. Kept between runs (keyed by sha) to reuse node_modules."""
     sha = subprocess.run(["git", "-C", str(WALLET_REPO), "rev-parse", "--verify", f"{ref}^{{commit}}"],
                          stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
-    src = Path(os.environ.get("BITBOX_E2E_CACHE", Path.home() / ".cache" / "bitbox-e2e")) / "src" / f"bitbox-wallet-app-{sha}"
+    src = bundle.CACHE / "src" / f"bitbox-wallet-app-{sha}"
     if not (src / ".git").exists():
         subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(WALLET_REPO), str(src)], check=True)
         subprocess.run(["git", "-C", str(src), "checkout", "-q", "--detach", sha], check=True)
@@ -451,6 +437,7 @@ def run_wallet(ref, sim_dir, tests, out):
 
 
 def cmd_wallet_compare(args):
+    bundle.use_node()
     out = Path(args.out)
     if out.exists():
         shutil.rmtree(out)
@@ -767,15 +754,16 @@ class Timer:
 
 def ensure_baseline(sha, jobs, timer=None, force=False):
     """Bundle for a firmware commit: created on first use (every unit headless + lane B), reused
-    after. Returns (root, manifest, sim_dir, units)."""
+    after. Returns (root, manifest, units). The simulator is built only to record: a bundle restored
+    from a CI cache must not cost a simulator build."""
     root = bundle.bundle_dir(sha)
-    sim_dir = build_sim(sha)
     fw_dir = bundle.firmware_dir(sha)
     units = bundle.load_units(fw_dir)
     m = None if force else bundle.read_manifest(root)
     if m is not None:
         log(f"reusing baseline {root}")
-        return root, m, sim_dir, units
+        return root, m, units
+    sim_dir = build_sim(sha)
     # coverage/ is written by coverage.py map and costs far more to rebuild; keep it.
     (root / "manifest.json").unlink(missing_ok=True)
     for d in ("units", "apis"):
@@ -790,29 +778,47 @@ def ensure_baseline(sha, jobs, timer=None, force=False):
                            f"(logs: {root}/units/*/headless.log)")
     m["units"] = {i: {"headless_ok": v, "graphical_ok": None} for i, v in ok.items()}
     timer and timer.done("baseline headless")
-    apis.run(sim_dir, fw_dir / bundle.FW_VECTORS, root / "apis")
+    m["revisions"] = revisions(apis.run(sim_dir, fw_dir / bundle.FW_VECTORS, root / "apis"))
     timer and timer.done("baseline apis")
     # The manifest marks the bundle complete, so a recording that died halfway is redone next time.
     bundle.write_manifest(root, m)
-    return root, m, sim_dir, units
+    return root, m, units
 
 
-def baseline_graphical(root, m, sim_dir, units, ids, jobs):
-    """Adds graphical runs to the bundle for units that do not have one yet."""
+def baseline_graphical(root, m, sha, units, ids, jobs):
+    """Adds graphical runs to the bundle for units that do not have one yet. Builds the simulator
+    only then. Returns how they ran (bundle.graphical_mode), None if nothing was missing."""
     todo = [u for u in units if u["id"] in ids and u["id"] in m["units"] and m["units"][u["id"]]["graphical_ok"] is None]
     if not todo:
-        return
+        return None
+    sim_dir = build_sim(sha)
     for i, v in bundle.run_units(sim_dir, todo, root, "graphical", jobs).items():
         m["units"][i]["graphical_ok"] = v
     bundle.write_manifest(root, m)
+    return bundle.graphical_mode(sim_dir)
+
+
+def revisions(api_results):
+    """Code under test besides the firmware: the bitbox-api-rs tree the driver links (driver/Cargo.toml
+    path dependency; with E2E_DRIVER it is whatever that binary was built from) and the API repo
+    revisions the suites ran. Base and head can differ, e.g. a bundle recorded weeks ago."""
+    revs = {"driver bitbox-api-rs": bundle.checkout_rev(E2E_DIR.parent / "bitbox-api-rs")}
+    for suite, modes in api_results["suites"].items():
+        revs[suite] = next((r["repo_sha"] for r in modes.values() if r.get("repo_sha")), None)
+    return revs
+
+
+def revision_diffs(base, head):
+    """Keys of revisions() known on both sides that differ."""
+    return [k for k, v in head.items() if v and base.get(k) and base[k] != v]
 
 
 def cmd_baseline(args):
     ensure_driver()
     timer = Timer()
     sha = bundle.resolve(args.ref)
-    root, m, sim_dir, units = ensure_baseline(sha, args.jobs, timer, force=args.force)
-    baseline_graphical(root, m, sim_dir, units, matching(units, args.graphical), args.jobs)
+    root, m, units = ensure_baseline(sha, args.jobs, timer, force=args.force)
+    baseline_graphical(root, m, sha, units, matching(units, args.graphical), args.jobs)
     timer.done("baseline graphical")
     ok = sum(bool(u["headless_ok"]) for u in m["units"].values())
     log(f"baseline {sha[:9]}: {ok}/{len(m['units'])} units ok, timings {timer.phases}")
@@ -862,7 +868,9 @@ def api_newly_failing(base_apis, head_apis, mode):
     bv, hv = (base_apis or {}).get("simulator"), head_apis.get("simulator")
     out = {}
     for suite, modes in head_apis["suites"].items():
-        r, b = modes.get(mode) or {}, base_suites.get(suite, {}).get(mode) or {}
+        r, b = modes.get(mode) or {}, base_suites.get(suite, {}).get(mode)
+        if b is None:
+            continue  # not run on base (new suite, or no firmware vectors at the merge-base)
         # Bundles recorded before results listed passing tests only have the failing ones.
         if "passing" in b:
             was = {api_test_key(t, bv) for t in b["passing"]}
@@ -912,7 +920,7 @@ def cmd_pr(args):
     out.mkdir(parents=True)
     head_sha = bundle.resolve(args.head)
     base_sha = bundle.git("merge-base", bundle.resolve(args.base), head_sha)
-    root, m, base_sim, base_units = ensure_baseline(base_sha, args.jobs, timer)
+    root, m, base_units = ensure_baseline(base_sha, args.jobs, timer)
     timer.done("baseline")
 
     head_sim = build_sim(args.head)
@@ -949,7 +957,7 @@ def cmd_pr(args):
     changed = {i for ids in groups.values() for i in ids}
     new = set(by_id) - set(m["units"])
     graphical = (changed - set(same_as)) | new | picked
-    baseline_graphical(root, m, base_sim, base_units, graphical, args.jobs)
+    base_mode = baseline_graphical(root, m, base_sha, base_units, graphical, args.jobs)
     bundle.run_units(head_sim, [by_id[i] for i in sorted(graphical)], out / "head", "graphical", args.jobs)
     # Frames can differ while the text does not (layout, fonts), but also by capture timing (a toast
     # caught on one side only), so these are reported apart from text changes.
@@ -971,11 +979,24 @@ def cmd_pr(args):
     api_results = apis.run(head_sim, head_fw / bundle.FW_VECTORS, out / "apis")
     timer.done("lane B")
 
+    base_apis = json.loads((root / "apis" / "results.json").read_text()) if (root / "apis" / "results.json").exists() else None
     pr = {
         "base": {"ref": args.base, "sha": base_sha, "bundle": str(root), "simulator_version": m["simulator_version"],
-                 "harness_sha": m.get("harness_sha")},
+                 "harness_sha": m.get("harness_sha"),
+                 # Bundles recorded before revisions were: the API repos from their results, driver unknown.
+                 "revisions": m.get("revisions") or (revisions(base_apis) | {"driver bitbox-api-rs": None}
+                                                     if base_apis else {}),
+                 "vectors": bundle.has_vectors(bundle.firmware_dir(base_sha))},
         "head": {"ref": args.head, "sha": head_sha, "simulator_version": head_version,
-                 "source": read_text(head_sim / "source.txt"), "harness_sha": bundle.harness_sha()},
+                 "source": read_text(head_sim / "source.txt"), "harness_sha": bundle.harness_sha(),
+                 "revisions": revisions(api_results), "vectors": bundle.has_vectors(head_fw)},
+        "run_mode": {
+            "namespaces": bundle.namespaces(),
+            "graphical_head": bundle.graphical_mode(head_sim) if graphical else None,
+            "graphical_base": base_mode,
+            "api_suites": "parallel, one network namespace each" if bundle.namespaces()
+            else f"one at a time on {bundle.SIM_PORT} (no network namespaces here)",
+        },
         "graphical_globs": args.graphical,
         "unreached": [f"{u['file']}:{u['lines'][0]} {u['function']}" for u in cov["unreached"]] if cov else None,
         "unmapped": cov["unmapped"] if cov else None,
@@ -988,8 +1009,7 @@ def cmd_pr(args):
             "graphical": u["id"] in graphical, "same_as": same_as.get(u["id"]), "expect": expectations.get(u["id"]),
         } for u in head_units},
         "removed": sorted(set(m["units"]) - set(by_id)),
-        "base_apis": json.loads((root / "apis" / "results.json").read_text())
-        if (root / "apis" / "results.json").exists() else None,
+        "base_apis": base_apis,
         "apis": api_results,
         "timings": timer.phases,
     }
@@ -1015,6 +1035,15 @@ def api_cell(r):
     return s + (f" / **{r['failed']} FAIL**" if r["failed"] else "")
 
 
+def run_mode_note(rm):
+    if not rm:
+        return "-"
+    g = {k: bundle.GRAPHICAL_MODES.get(rm[k], "none run") for k in ("graphical_head", "graphical_base")}
+    return (f"network namespaces {'available' if rm['namespaces'] else 'unavailable'}; headless units in parallel, "
+            f"own port each; graphical on head: {g['graphical_head']}, on base: {g['graphical_base']}; "
+            f"API suites: {rm['api_suites']}")
+
+
 def short_sha(s):
     return "-" if not s else s[:9] + ("+dirty" if s.endswith("+dirty") else "")
 
@@ -1034,9 +1063,15 @@ def pr_report(out):
           "| | base (merge-base) | head |", "|---|---|---|",
           f"| firmware | `{base['sha'][:9]}` | `{head['ref']}` (`{head['sha'][:9]}`) |",
           f"| simulator | {base['simulator_version']} | {head['simulator_version']} |",
-          f"| harness | `{short_sha(base['harness_sha'])}` | `{short_sha(head['harness_sha'])}` |", ""]
+          f"| harness | `{short_sha(base['harness_sha'])}` | `{short_sha(head['harness_sha'])}` |"]
+    base_revs, head_revs = base.get("revisions") or {}, head.get("revisions") or {}
+    md += [f"| {k} | `{short_sha(base_revs.get(k))}` | `{short_sha(v)}` |" for k, v in head_revs.items()]
+    md.append("")
     if base["harness_sha"] != head["harness_sha"]:
         md += ["*The baseline was recorded with another harness revision; harness changes can show up as diffs.*", ""]
+    if diffs := revision_diffs(base_revs, head_revs):
+        md += [f"*Not only the firmware differs: {', '.join(diffs)} ran at another revision on base than on head; "
+               "their changes can show up as diffs or API test failures (not gating by themselves).*", ""]
     md += ["## Verdict", ""]
     if pr["verdict"]:
         md += [f"**REGRESSION**: {len(pr['verdict'])} reason(s), the run exits 1.", "",
@@ -1057,6 +1092,10 @@ def pr_report(out):
            f"- **Expectations** (not gating): {exp_n['pass']} pass, {exp_n['fail']} fail, {exp_n['no-expectation']} without "
            f"expectation for this version, {len(units) - len(exp)} units without expectations",
            "- **Unreached changed functions**: " + unreached_note(pr["unreached"], pr.get("unmapped")),
+           *[f"- **No BTC vectors file at {side}** (`{pr[side]['sha'][:9]}`, before firmware 3bdaf583b): btc-vector "
+             "units unavailable there, the API suites ran with their committed vectors only"
+             for side in ("base", "head") if pr[side].get("vectors") is False],
+           "- **Run mode**: " + run_mode_note(pr.get("run_mode")),
            "- **Timings**: " + ", ".join(f"{k} {v}s" for k, v in pr["timings"].items()), ""]
 
     suites = pr["apis"]["suites"]
@@ -1169,7 +1208,8 @@ def main():
             b.add_argument("--out", required=True)
         b.add_argument("--graphical", "--graphical-units", nargs="+", action="extend", default=[], metavar="GLOB",
                        help="unit id globs to also run on the graphical simulator")
-        b.add_argument("-j", "--jobs", type=int, default=4, help="units in parallel (one netns + X display each)")
+        b.add_argument("-j", "--jobs", type=int, default=bundle.JOBS,
+                       help=f"units in parallel (default: half the CPUs, {bundle.JOBS})")
     pm = sub.add_parser("promote")
     pm.add_argument("dir", help="e2e.py pr --out directory")
     pm.add_argument("units", nargs="+")
@@ -1184,15 +1224,14 @@ def main():
     wc = sub.add_parser("wc", help="WalletConnect dapp -> app -> device flow, base vs head (wc/flow.py)")
     wc.add_argument("--base", required=True, help="bitbox-wallet-app ref")
     wc.add_argument("--head", required=True, help="bitbox-wallet-app ref")
-    wc.add_argument("--firmware", default="bitbox/master", help="firmware ref (or WORKTREE) for the simulator")
+    wc.add_argument("--firmware", help="firmware ref (or WORKTREE) for the simulator; default: master of the "
+                    "remote pointing at BitBoxSwiss/bitbox02-firmware, else origin/master")
     wc.add_argument("--out", required=True)
     rb = sub.add_parser("rabby", help="Rabby extension -> fake BitBoxBridge -> graphical simulator, firmware base vs head (rabby/)")
     rb.add_argument("--base", required=True, help="firmware ref")
     rb.add_argument("--head", required=True, help="firmware ref or WORKTREE")
     rb.add_argument("--out", required=True)
     rb.add_argument("--rabby-ref", default="v0.94.15", help="Rabby tag/commit, built unpacked from a clone")
-    rb.add_argument("--display", default=os.environ.get("E2E_DISPLAY", ":71"), help="X display for the simulator")
-    rb.add_argument("--browser-display", default=":73", help="X display for Chromium")
     args = p.parse_args()
     # Exit codes: 0 clean, 1 regression (per command), 2 the harness itself failed.
     try:

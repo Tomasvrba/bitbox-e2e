@@ -29,11 +29,11 @@ from pathlib import Path
 
 E2E_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(E2E_DIR))
+import bundle  # noqa: E402
 import e2e  # noqa: E402
 import units  # noqa: E402
 
-CACHE = Path(os.environ.get("BITBOX_E2E_CACHE", Path.home() / ".cache" / "bitbox-e2e"))
-FW = Path(os.environ.get("BITBOX_FIRMWARE", E2E_DIR.parent / "bitbox02-firmware"))
+CACHE, FW = bundle.CACHE, bundle.FW
 SKIP = re.compile(r"/tests?/|/build/[^/]+/out/|/testing/|/benches/|/bins?/|^src/rust/(bitbox-test-vectors|vendor|async_test)/")
 
 
@@ -60,18 +60,22 @@ def load_units(sha):
 # --- map ------------------------------------------------------------------------------------------
 
 def norm_path(p):
-    """Firmware-relative path of a coverage source file, or None if it isn't firmware Rust we track."""
-    # rustc remaps <fw>/src/rust to "src" and llvm-cov prefixes the compilation dir "src" again.
-    # Builds under $HOME get "$HOME=" remapped instead, leaving .../bitbox02-firmware-<sha>/src/rust/...
+    """Firmware-relative path (src/rust/...) of a coverage source file, or None if it isn't firmware
+    Rust we track. Goes by the firmware's own layout only, not by where the clone was built."""
+    # std, vendored and registry crates; their paths can contain /src/rust/ too (rustlib/src/rust/library).
+    if re.search(r"rustlib|\.cargo|/vendor/", p):
+        return None
+    # rustc gets "<fw>/src/rust=src" and "$HOME=" remaps (src/CMakeLists.txt); the last match wins.
+    # Outside $HOME, files become src/<crate>/... and llvm-cov prefixes the compilation dir "src".
+    # Under $HOME both the compilation dir and the file are HOME-relative clone paths ending in
+    # .../src/rust/<crate>/..., so the last /src/rust/ starts the firmware path.
     if p.startswith("src/src/"):
-        p = "src/rust/" + p[8:]
-    elif "bitbox02-firmware" in p and "/src/rust/" in p:
+        p = "src/rust/" + p[len("src/src/"):]
+    elif "/src/rust/" in p:
         p = p[p.rindex("/src/rust/") + 1:]
     else:
         return None
-    if "rustlib" in p or ".cargo" in p or SKIP.search(p):
-        return None
-    return p
+    return None if SKIP.search(p) else p
 
 
 def strip_generics(name):
@@ -135,7 +139,7 @@ def function_table(cov, profdata, binary):
 
 
 def run_units(sim_dir, work, sha, shard, shards):
-    """Runs inside isolated.sh: this shard's units headless, one profile directory each."""
+    """This shard's units headless, one profile directory each."""
     sim_dir, work = Path(sim_dir), Path(work)
     for unit in load_units(sha)[shard::shards]:
         d = work / units.slug(unit["id"])
@@ -160,9 +164,9 @@ def cmd_map(args):
     work = Path(args.work or f"/tmp/e2e-cov/{sha[:12]}")
     shutil.rmtree(work, ignore_errors=True)
     log(f"{len(unit_ids)} units, {args.jobs} shards, work dir {work}")
-    # Each shard gets its own network namespace, so the simulators' fixed port doesn't collide.
-    shards = [subprocess.Popen([str(E2E_DIR / "isolated.sh"), sys.executable, __file__, "_run", str(sim_dir),
-                                str(work), sha, str(i), str(args.jobs)]) for i in range(args.jobs)]
+    # Shards run side by side: every headless run picks its own port.
+    shards = [subprocess.Popen([sys.executable, __file__, "_run", str(sim_dir), str(work), sha, str(i), str(args.jobs)])
+              for i in range(args.jobs)]
     if any(p.wait() for p in shards):
         raise RuntimeError("a unit shard crashed")
 
@@ -365,7 +369,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("map")
     p.add_argument("ref")
-    p.add_argument("-j", "--jobs", type=int, default=4)
+    p.add_argument("-j", "--jobs", type=int, default=bundle.JOBS)
     p.add_argument("--work", help="profiles and per-unit logs (default /tmp/e2e-cov/<sha>)")
     p = sub.add_parser("select")
     p.add_argument("--base", required=True)

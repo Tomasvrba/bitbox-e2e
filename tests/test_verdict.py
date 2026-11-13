@@ -88,3 +88,11 @@ def test_drift_against_committed_vector_copies_does_not_gate():
     head = {"simulator": "v", "suites": {"api-rs": {"committed": suite(failing=["a"]), "firmware": suite(passing=["a"])}}}
     assert e2e.verdict({}, base, head) == []
     assert e2e.api_newly_failing(base, head, "committed") == {"api-rs": ["a"]}
+
+
+def test_mode_missing_on_base_does_not_gate():
+    # A merge-base without the firmware's vectors file has no firmware-vector run to compare with.
+    base = {"simulator": "v", "suites": {"api-rs": {"committed": suite(passing=["a"])}}}
+    head = {"simulator": "v", "suites": {"api-rs": {"committed": suite(passing=["a"]),
+                                                    "firmware": suite(passing=["a"], failing=["b"])}}}
+    assert e2e.verdict({}, base, head) == []

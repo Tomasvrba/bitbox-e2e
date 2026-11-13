@@ -5,26 +5,29 @@
 
 Each suite runs twice, from scratch clones of the sibling checkout's HEAD:
   committed  the repo's own copy of the BTC transaction vectors (drift vs. the firmware)
-  firmware   the firmware ref's vectors copied in (regression of the firmware itself)
+  firmware   the firmware ref's vectors copied in (regression of the firmware itself); skipped for
+             refs without the vectors file
 
-Deps are built outside the network namespace; the suites themselves run inside isolated.sh, all
-six at once (each namespace has its own port 15423).
+The suites connect to the simulator on 15423. Deps are built first, outside any network namespace;
+the suites then run inside isolated.sh, all six at once, or one at a time where namespaces are
+unavailable.
 """
 
+import contextlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-E2E_DIR = Path(__file__).resolve().parent
-WORKSPACE = Path(os.environ.get("BITBOX_WORKSPACE", E2E_DIR.parent))
-CACHE = Path(os.environ.get("BITBOX_E2E_CACHE", Path.home() / ".cache" / "bitbox-e2e"))
-FW_VECTORS = "src/rust/bitbox-test-vectors/testdata/btc-transaction-test-vectors.json"
+import bundle
+from bundle import CACHE, E2E_DIR, WORKSPACE
+
 MODES = ("committed", "firmware")
 SUITES = {
     "api-go": ("bitbox02-api-go", "api/firmware/testdata/btc-transaction-test-vectors.json"),
@@ -134,7 +137,7 @@ def suite_error(code, res):
     return None
 
 
-def run_one(suite, mode, sim_dir, fw_vectors, out):
+def run_one(suite, mode, sim_dir, fw_vectors, out, run_lock):
     t0 = time.time()
     clone, sha, vectors = scratch_clone(suite, mode)
     if mode == "firmware":
@@ -150,12 +153,16 @@ def run_one(suite, mode, sim_dir, fw_vectors, out):
         logf.write_text(f"build failed: {e}\n")
         return dict(res, error="build failed", passed=0, failed=0, skipped=0, failing=[], passing=[])
     t1 = time.time()
-    with open(logf, "w") as f:
-        p = subprocess.run(["nice", str(E2E_DIR / "isolated.sh"), *run_cmd(suite, out_json)], cwd=clone, env=env,
+    with run_lock or contextlib.nullcontext(), open(logf, "w") as f:
+        t2 = time.time()  # waiting for the lock is neither build nor run time
+        if run_lock:
+            bundle.wait_port_free(bundle.SIM_PORT)
+        isolated = [] if run_lock else [str(E2E_DIR / "isolated.sh")]
+        p = subprocess.run(["nice", *isolated, *run_cmd(suite, out_json)], cwd=clone, env=env,
                            stdout=f, stderr=subprocess.STDOUT, timeout=3600)
     text = logf.read_text(errors="replace")
     res.update(parse(suite, text, out_json), exit=p.returncode,
-               build_s=round(t1 - t0), run_s=round(time.time() - t1))
+               build_s=round(t1 - t0), run_s=round(time.time() - t2))
     if err := suite_error(p.returncode, res):
         res["error"] = err
     log(f"{suite} {mode}: {res['passed']} passed, {res['failed']} failed ({res['run_s']}s)")
@@ -166,9 +173,14 @@ def run(sim_dir, fw_vectors, out, suites=tuple(SUITES)):
     """Returns {suite: {mode: result}} and writes it to <out>/results.json."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    jobs = [(s, m) for s in suites for m in MODES]
+    if "api-ts" in suites:
+        bundle.use_node()
+    modes = MODES if Path(fw_vectors).exists() else ("committed",)
+    # Without namespaces every suite's simulator binds 15423 on the host: builds stay parallel, runs take turns.
+    run_lock = None if bundle.namespaces() else threading.Lock()
+    jobs = [(s, m) for s in suites for m in modes]
     with ThreadPoolExecutor(len(jobs)) as ex:
-        futs = {j: ex.submit(run_one, *j, Path(sim_dir), Path(fw_vectors), out) for j in jobs}
+        futs = {j: ex.submit(run_one, *j, Path(sim_dir), Path(fw_vectors), out, run_lock) for j in jobs}
     results = {}
     for (s, m), f in futs.items():
         try:

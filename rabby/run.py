@@ -5,12 +5,11 @@
 # ///
 """One Rabby flow against one graphical simulator. Run inside isolated.sh (fixed ports below).
 
-  run.py --sim-dir <dir> --rabby-dist <dir> --out <dir> [--display :71] [--browser-display :73]
-         [--record-sock /tmp/x.sock]
+  run.py --sim-dir <dir> --rabby-dist <dir> --out <dir> [--record-sock /tmp/x.sock]
 
-Starts: graphical simulator (gsim) on --display, sim_bridge.py on :8178, one anvil per chain, the
+Starts: graphical simulator (gsim) on its own Xvfb, sim_bridge.py on :8178, one anvil per chain, the
 API proxy (api_proxy.py, replaying fixtures/rabby-api.json.gz, or recording through --record-sock to
-a host-side proxy), the test dapp on :8080, and flow.ts with Chromium on --browser-display.
+a host-side proxy), the test dapp on :8080, and flow.ts with Chromium on a second Xvfb.
 The device is confirmed with the same policy as e2e.py run_graphical (tap top-right, then pinch).
 
 Writes to --out: frames.json + device/*.png (device frames, labelled by flow step), shots.json +
@@ -38,9 +37,10 @@ RABBY_DIR = Path(__file__).resolve().parent
 E2E_DIR = RABBY_DIR.parent
 sys.path.insert(0, str(E2E_DIR))
 
+import bundle  # noqa: E402
 import gsim  # noqa: E402
 
-ANVIL = Path(os.environ.get("ANVIL", Path(os.environ.get("BITBOX_E2E_TOOLS", Path.home() / ".local/share/bitbox-e2e/tools")) / "foundry/bin/anvil"))
+ANVIL = Path(os.environ.get("ANVIL", bundle.TOOLS / "foundry" / "bin" / "anvil"))
 # chain id -> anvil port; flow.ts sets these as Rabby custom RPCs.
 CHAINS = {1: 8545, 42161: 8546, 56: 8547}
 # The account Rabby imports: m/44'/60'/0'/0/0 of simulator-graphical's --preseed mnemonic. Funded
@@ -130,8 +130,6 @@ def main():
     p.add_argument("--sim-dir", required=True)
     p.add_argument("--rabby-dist", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--display", default=os.environ.get("E2E_DISPLAY", ":71"))
-    p.add_argument("--browser-display", default=":73")
     p.add_argument("--record-sock", help="record the API fixture through this host-side proxy socket")
     p.add_argument("--timeout", type=int, default=900)
     args = p.parse_args()
@@ -150,13 +148,14 @@ def main():
     ok = False
     error = None
     try:
-        xvfb = gsim.Xvfb(args.display, logs / "xvfb-sim.log")
+        xvfb = gsim.Xvfb(logs / "xvfb-sim.log")
         cleanup.append(xvfb.stop)
-        bxvfb = gsim.Xvfb(args.browser_display, logs / "xvfb-browser.log")
+        bxvfb = gsim.Xvfb(logs / "xvfb-browser.log")
         cleanup.append(bxvfb.stop)
         memdir = out / "fake-memory"
         memdir.mkdir()
-        sim = gsim.GraphicalSim(str(Path(args.sim_dir) / "simulator-graphical"), args.display,
+        # 15423 (no --port): sim_bridge.py's default, and this runs in its own network namespace.
+        sim = gsim.GraphicalSim(str(Path(args.sim_dir) / "simulator-graphical"), xvfb.disp,
                                 str(logs / "simulator.log"), str(memdir))
         cleanup.append(sim.stop)
         step = "boot"
@@ -190,7 +189,7 @@ def main():
         flow = subprocess.Popen(
             ["node", str(RABBY_DIR / "flow.ts"), "--ext", str(Path(args.rabby_dist).resolve()), "--out", str(out),
              "--dapp", f"http://127.0.0.1:{DAPP_PORT}/", "--proxy", f"127.0.0.1:{PROXY_PORT}"],
-            cwd=RABBY_DIR, env=dict(env, DISPLAY=args.browser_display), text=True,
+            cwd=RABBY_DIR, env=dict(env, DISPLAY=bxvfb.disp), text=True,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(logs / "flow.err", "w"))
         procs.append(flow)
         q = queue.Queue()

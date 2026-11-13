@@ -9,6 +9,8 @@ refs with one firmware simulator and reports app screenshots next to device fram
 
   e2e.py wc --base <app-ref> --head <app-ref> --out <dir> [--firmware <fw-ref|WORKTREE>]
   flow.py run --ref <app-ref> --out <dir> [--firmware <fw-ref>]   one side only
+
+--firmware defaults to master of the remote pointing at BitBoxSwiss/bitbox02-firmware (else origin).
   flow.py same <run-dir>...       which steps produced identical app screenshots / device frames
   flow.py report <dir>            re-render report.html from <dir>/{base,head}
 
@@ -29,12 +31,13 @@ WC_DIR = Path(__file__).resolve().parent
 E2E_DIR = WC_DIR.parent
 sys.path.insert(0, str(E2E_DIR))
 
+import bundle  # noqa: E402
 import e2e  # noqa: E402
 
 TEST = "walletconnect.test.ts"
-# vite preview, servewallet, simulator. Playwright reuses whatever listens on 8080, so a stale
-# server there would silently serve another ref.
-PORTS = (8080, 8082, 15423)
+# vite preview, servewallet, simulator (the app's simulator mode connects to 15423). Playwright
+# reuses whatever listens on 8080, so a stale server there would silently serve another ref.
+PORTS = (8080, 8082, bundle.SIM_PORT)
 # Steps whose device screens differ every run (pairing code) or that belong to no request.
 SETUP_STEPS = {"boot", "setup"}
 
@@ -68,8 +71,7 @@ def run_side(ref, sim_dir, out):
     (web / "e2e-results.json").unlink(missing_ok=True)
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, PLAYWRIGHT_USE_PREBUILT_WEB="1", WC_OUT=str(out),
-               WC_DAPP=str(WC_DIR / "dapp.mjs"), WC_DEVICE=str(WC_DIR / "device.py"),
-               SIMULATOR_DIR=str(sim_dir), E2E_DISPLAY=os.environ.get("E2E_DISPLAY", ":72"))
+               WC_DAPP=str(WC_DIR / "dapp.mjs"), WC_DEVICE=str(WC_DIR / "device.py"), SIMULATOR_DIR=str(sim_dir))
     e2e.log(f"wc {sha[:9]}: playwright {TEST}")
     try:
         with open(out / "playwright.log", "w") as f:
@@ -106,12 +108,13 @@ def first_error(results):
 
 
 def cmd_wc(args):
+    bundle.use_node()
     out = Path(args.out)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
     ensure_dapp()
-    sim_dir = e2e.build_sim(args.firmware)
+    sim_dir = e2e.build_sim(args.firmware or bundle.default_firmware_ref())
     failed = []
     for side, ref in (("base", args.base), ("head", args.head)):
         meta = run_side(ref, sim_dir, out / side)
@@ -261,15 +264,16 @@ def main():
     r = sub.add_parser("run")
     r.add_argument("--ref", required=True)
     r.add_argument("--out", required=True)
-    r.add_argument("--firmware", default="bitbox/master")
+    r.add_argument("--firmware")
     sub.add_parser("same").add_argument("dirs", nargs="+")
     sub.add_parser("report").add_argument("dir")
     args = p.parse_args()
     if args.cmd == "run":
+        bundle.use_node()
         ensure_dapp()
         out = Path(args.out)
         shutil.rmtree(out, ignore_errors=True)
-        run_side(args.ref, e2e.build_sim(args.firmware), out)
+        run_side(args.ref, e2e.build_sim(args.firmware or bundle.default_firmware_ref()), out)
     elif args.cmd == "same":
         same(args.dirs)
     else:

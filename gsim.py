@@ -8,6 +8,7 @@ test/simulator-graphical/src/main.rs; update them together.
 
 import hashlib
 import os
+import select
 import socket
 import subprocess
 import time
@@ -15,6 +16,8 @@ import time
 from PIL import Image
 from Xlib import X, display as xdisplay
 from Xlib.ext import xtest
+
+import bundle
 
 MARGIN = 20
 PADDING_TOP_BOTTOM = 22
@@ -42,18 +45,30 @@ def slider_x(pos):
 
 
 class Xvfb:
-    def __init__(self, disp, log_path):
-        self.disp = disp
+    """Xvfb on a display it picks itself (-displayfd): the first one without a lock file in /tmp,
+    which network namespaces share, so concurrent runs never collide. It writes the number once it
+    accepts clients; a socket file left by a dead server can't pass for that. self.disp is ":<n>"."""
+
+    def __init__(self, log_path, timeout_s=10):
         self.log = open(log_path, "w")
+        r, w = os.pipe()
         self.proc = subprocess.Popen(
-            ["Xvfb", disp, "-screen", "0", "640x480x24", "-nolisten", "tcp"],
-            stdout=self.log, stderr=self.log)
-        sock = f"/tmp/.X11-unix/X{disp.lstrip(':')}"
-        for _ in range(100):
-            if os.path.exists(sock):
-                return
-            time.sleep(0.05)
-        raise RuntimeError(f"Xvfb {disp} did not start, see {log_path}")
+            ["Xvfb", "-displayfd", str(w), "-screen", "0", "640x480x24", "-nolisten", "tcp"],
+            stdout=self.log, stderr=self.log, pass_fds=(w,))
+        os.close(w)
+        got, deadline = b"", time.time() + timeout_s
+        try:
+            while not got.endswith(b"\n") and select.select([r], [], [], max(0, deadline - time.time()))[0]:
+                chunk = os.read(r, 16)
+                if not chunk:
+                    break  # Xvfb exited
+                got += chunk
+        finally:
+            os.close(r)
+        if not got.strip().isdigit():
+            self.stop()
+            raise RuntimeError(f"Xvfb did not start, see {log_path}")
+        self.disp = f":{got.decode().strip()}"
 
     def stop(self):
         self.proc.terminate()
@@ -62,10 +77,12 @@ class Xvfb:
 
 
 class GraphicalSim:
-    def __init__(self, binary, disp, log_path, fake_memory_dir):
+    def __init__(self, binary, disp, log_path, fake_memory_dir, port=None):
+        """port=None: no --port, the simulator binds 15423 (all of them can, older ones only that)."""
         env = dict(os.environ, DISPLAY=disp, FAKE_MEMORY_FILEPATH=fake_memory_dir + "/fm")
+        self.port = port or bundle.SIM_PORT
         self.log = open(log_path, "w")
-        self.proc = subprocess.Popen([binary, "--preseed"], env=env,
+        self.proc = subprocess.Popen([binary, "--preseed", *(["--port", str(port)] if port else [])], env=env,
                                      stdout=self.log, stderr=self.log)
         self.d = xdisplay.Display(disp)
         self.root = self.d.screen().root
@@ -142,11 +159,11 @@ class GraphicalSim:
                 break
         self.move(*IDLE)
 
-    def accepting(self, port=15423):
+    def accepting(self):
         """Whether the simulator keeps a client: until its startup task (orientation, logo) is
         done it accepts TCP connections and drops them right away."""
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1) as s:
+            with socket.create_connection(("127.0.0.1", self.port), timeout=1) as s:
                 s.settimeout(0.3)
                 return s.recv(1) != b""
         except socket.timeout:

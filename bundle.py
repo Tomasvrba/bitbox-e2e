@@ -1,34 +1,47 @@
-"""Units, baseline bundles and the parallel unit runner shared by `e2e.py baseline` and `e2e.py pr`.
+"""Shared by every harness script: where things live, ports, the network namespace probe, node 26.
+Also units, baseline bundles and the parallel unit runner of `e2e.py baseline` and `e2e.py pr`.
 
 Bundle layout ($BITBOX_E2E_CACHE/baselines/<sha>/, see DESIGN.md):
   manifest.json, units/<slug>/{scenario.json,meta.json,headless/,graphical/}, apis/, coverage/
 """
 
+import functools
 import json
 import os
+import re
+import socket
 import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from queue import Queue
 
 import units
 from units import slug  # noqa: F401  (re-exported for e2e.py)
 
+# Same defaults as env.sh, for runs that did not source it.
 E2E_DIR = Path(__file__).resolve().parent
-SCENARIOS = E2E_DIR / "scenarios"
+WORKSPACE = Path(os.environ.get("BITBOX_WORKSPACE", E2E_DIR.parent))
 CACHE = Path(os.environ.get("BITBOX_E2E_CACHE", Path.home() / ".cache" / "bitbox-e2e"))
-FW = Path(os.environ.get("BITBOX_FIRMWARE", E2E_DIR.parent / "bitbox02-firmware"))
+TOOLS = Path(os.environ.get("BITBOX_E2E_TOOLS", Path(os.environ.get(
+    "BITBOX_E2E_HOME", Path.home() / ".local" / "share" / "bitbox-e2e")) / "tools"))
+FW = Path(os.environ.get("BITBOX_FIRMWARE", WORKSPACE / "bitbox02-firmware"))
+SCENARIOS = E2E_DIR / "scenarios"
 FW_VECTORS = units.VECTORS_PATH
+# Where the API simulator suites, the app's simulator mode and graphical simulators without --port
+# connect. Everything else gets a free port.
+SIM_PORT = 15423
+# A graphical simulator busy-loops a core and misses host polls under load (README); headless units
+# would take more, but one -j serves both.
+JOBS = max(1, len(os.sched_getaffinity(0)) // 2)
 
 
 def log(msg):
     print(f"[e2e] {msg}", file=sys.stderr, flush=True)
 
 
-def git(*args, cwd=FW):
-    return subprocess.run(["git", "-C", str(cwd), *args], stdout=subprocess.PIPE, text=True,
+def git(*args, cwd=None):
+    return subprocess.run(["git", "-C", str(cwd or FW), *args], stdout=subprocess.PIPE, text=True,
                           check=True).stdout.strip()
 
 
@@ -40,9 +53,29 @@ def bundle_dir(sha):
     return CACHE / "baselines" / sha
 
 
+def checkout_rev(path):
+    """HEAD of the git checkout at path, "+dirty" with uncommitted changes under it."""
+    dirty = git("status", "--porcelain", "--", ".", cwd=path)
+    return git("rev-parse", "HEAD", cwd=path) + ("+dirty" if dirty else "")
+
+
 def harness_sha():
-    dirty = git("status", "--porcelain", "--", ".", cwd=E2E_DIR)
-    return git("rev-parse", "HEAD", cwd=E2E_DIR) + ("+dirty" if dirty else "")
+    return checkout_rev(E2E_DIR)
+
+
+def upstream_remote(repo, github_slug):
+    """The remote of repo pointing at github.com/<github_slug>, else "origin". Remote names are
+    per clone: a CI checkout only has origin, a developer's origin is often their fork."""
+    url_re = re.compile(rf"github\.com[:/]{re.escape(github_slug)}(\.git)?/?$", re.I)
+    for line in git("remote", "-v", cwd=repo).splitlines():
+        name, url = line.split()[:2]
+        if url_re.search(url):
+            return name
+    return "origin"
+
+
+def default_firmware_ref():
+    return f"{upstream_remote(FW, 'BitBoxSwiss/bitbox02-firmware')}/master"
 
 
 def read_manifest(root):
@@ -62,44 +95,129 @@ def firmware_dir(ref):
     sha = resolve(ref)
     d = CACHE / "src" / f"fw-files-{sha}"
     dst = d / FW_VECTORS
+    d.mkdir(parents=True, exist_ok=True)
     if not dst.exists():
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_text(git("show", f"{sha}:{FW_VECTORS}") + "\n")
+        # Refs before the vectors file (firmware 3bdaf583b) have no btc-vector units.
+        r = subprocess.run(["git", "-C", str(FW), "show", f"{sha}:{FW_VECTORS}"], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, text=True)
+        if r.returncode == 0:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(r.stdout + "\n")
     return d
+
+
+def has_vectors(fw_dir):
+    return (Path(fw_dir) / FW_VECTORS).exists()
 
 
 def load_units(fw_dir):
     return units.load_units(fw_dir, SCENARIOS)
 
 
-def run_units(sim_dir, unit_list, root, view, jobs):
-    """Runs each unit in its own network namespace (`isolated.sh e2e.py device`), `jobs` at a time,
-    writing <root>/units/<slug>/. view is "headless" or "graphical". Returns {id: ok}.
+# --- running simulators side by side ---------------------------------------------------------------
 
-    Graphical slots use consecutive X displays starting at $E2E_DISPLAY."""
-    base_disp = int(os.environ.get("E2E_DISPLAY", ":82").lstrip(":"))
-    displays = Queue()
-    for i in range(jobs):
-        displays.put(f":{base_disp + i}")
+def free_port():
+    """A port a simulator can bind right now. Bound like the headless simulator binds (0.0.0.0, no
+    SO_REUSEADDR), so the kernel does not hand out a port that is in TIME_WAIT."""
+    with socket.socket() as s:
+        s.bind(("0.0.0.0", 0))
+        return s.getsockname()[1]
+
+
+def wait_port_free(port, timeout_s=70, reuseaddr=False):
+    """Waits until a simulator could bind port, tested the way it binds. The headless simulator (C)
+    binds without SO_REUSEADDR, so it has to wait out TIME_WAIT (up to 60s on Linux) after the last
+    one. simulator-graphical (Rust std TcpListener) sets it: reuseaddr=True, or every run on the
+    fixed port would idle for a minute first."""
+    deadline = time.time() + timeout_s
+    while True:
+        with socket.socket() as s:
+            if reuseaddr:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("0.0.0.0", port))
+                return
+            except OSError:
+                pass
+        if time.time() >= deadline:
+            raise RuntimeError(f"port {port} still busy; is another simulator running?")
+        time.sleep(0.2)
+
+
+@functools.cache
+def namespaces():
+    """Whether isolated.sh works here. Most CI containers block unprivileged user namespaces."""
+    r = subprocess.run([str(E2E_DIR / "isolated.sh"), "true"], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.PIPE, text=True)
+    if r.returncode:
+        log("no network namespaces here, fixed-port runs go one at a time: "
+            + " ".join(r.stderr.split()[:30]))
+    return r.returncode == 0
+
+
+@functools.cache
+def takes_port(sim_dir):
+    """Whether this simulator-graphical has --port. Firmware before 2a974858a always binds 15423."""
+    try:
+        r = subprocess.run([str(Path(sim_dir) / "simulator-graphical"), "--help"], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, text=True, timeout=30)
+    except OSError:
+        return False
+    return "--port" in r.stdout
+
+
+# How graphical units run on a simulator, see graphical_mode().
+GRAPHICAL_MODES = {
+    "port": "parallel, own --port each",
+    "netns": "parallel, one network namespace each (simulator has no --port)",
+    "serial": f"one at a time on {SIM_PORT} (simulator has no --port, no network namespaces here)",
+}
+
+
+def graphical_mode(sim_dir):
+    if takes_port(sim_dir):
+        return "port"
+    return "netns" if namespaces() else "serial"
+
+
+def use_node():
+    """Puts node 26 (env.sh's BITBOX_NODE_BIN) first on PATH for every child process. The app needs
+    >=26.12.1; another node fails late and confusingly, so refuse to start without it."""
+    node_bin = os.environ.get("BITBOX_NODE_BIN")
+    if not node_bin:
+        sys.exit("BITBOX_NODE_BIN is unset, so there is no node 26: run e2e/setup.sh (it installs one), "
+                 "then source e2e/env.sh")
+    if os.environ.get("PATH", "").split(os.pathsep)[0] != node_bin:
+        os.environ["PATH"] = node_bin + os.pathsep + os.environ.get("PATH", "")
+
+
+def run_units(sim_dir, unit_list, root, view, jobs):
+    """Runs `e2e.py device` per unit, `jobs` at a time, writing <root>/units/<slug>/. view is
+    "headless" or "graphical". Returns {id: ok}.
+
+    Headless units and graphical ones on a simulator with --port each pick a free port. Older
+    graphical simulators always bind 15423: each runs in its own network namespace (isolated.sh), or
+    one at a time where there are none."""
+    isolate = False
+    if view == "graphical":
+        mode = graphical_mode(sim_dir)
+        isolate, jobs = mode == "netns", 1 if mode == "serial" else jobs
+        log(f"graphical on {Path(sim_dir).name[:9]}: {GRAPHICAL_MODES[mode]}")
 
     def one(u):
         d = Path(root) / "units" / slug(u["id"])
         d.mkdir(parents=True, exist_ok=True)
         (d / "scenario.json").write_text(json.dumps(u["scenario"], indent=2))
-        disp = displays.get()
         error = None
         try:
             skip = "--no-graphical" if view == "headless" else "--no-headless"
-            cmd = ["nice", str(E2E_DIR / "isolated.sh"), sys.executable, str(E2E_DIR / "e2e.py"), "device",
-                   "--scenario", str(d / "scenario.json"), "--sim-dir", str(sim_dir), "--out", str(d),
-                   "--label", u["id"], skip]
+            cmd = ["nice", *([str(E2E_DIR / "isolated.sh")] if isolate else []), sys.executable,
+                   str(E2E_DIR / "e2e.py"), "device", "--scenario", str(d / "scenario.json"),
+                   "--sim-dir", str(sim_dir), "--out", str(d), "--label", u["id"], skip]
             with open(d / f"{view}.log", "w") as f:
-                subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, timeout=900,
-                               env=dict(os.environ, E2E_DISPLAY=disp))
+                subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, timeout=900)
         except subprocess.TimeoutExpired:
             error = "timeout"
-        finally:
-            displays.put(disp)
         meta_path = d / "meta.json"
         meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
         if error is None and meta.get(f"{view}_ok") is None:

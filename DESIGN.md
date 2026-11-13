@@ -54,12 +54,17 @@ Screens are the `screens.json` list `run_headless` writes (headless simulator tr
 `$BITBOX_E2E_CACHE/baselines/<sha>/`:
 
 ```
-manifest.json                 {sha, simulator_version, harness_sha, created, units: {id: {headless_ok, graphical_ok}}}
+manifest.json                 {sha, simulator_version, harness_sha, created, revisions, units: {id: {headless_ok, graphical_ok}}}
 units/<id-slug>/headless/     screens.json, combined.log, driver.jsonl
 units/<id-slug>/graphical/    frames.json, *.png      (only units selected for graphical)
 apis/                         lane-B results for this ref
 coverage/map.json             function -> unit ids (from the instrumented build)
 ```
+
+`revisions` is what else was under test: `driver bitbox-api-rs` (the sibling tree the driver links,
+`+dirty` if modified) and each API suite's repo revision. `pr.json` has the same for head
+(`head.revisions`); the report flags differences without gating. A ref without the firmware's BTC
+vectors file has no btc-vector units and no firmware-vector API run (`base.vectors`/`head.vectors`).
 
 PR runs reuse it (keyed by the merge-base sha) and only run head. CI publishes the directory as a
 tarball (release asset); locally it lives in the cache.
@@ -77,9 +82,17 @@ tarball (release asset); locally it lives in the cache.
 
 ## Parallel runs
 
-Both simulators bind 127.0.0.1:15423. Wrap runs in `isolated.sh` (private network namespace) and
-give each concurrent run its own `E2E_DISPLAY`. Build outside the namespace (no network inside).
-`E2E_DRIVER=<path>` uses a prebuilt driver and skips the cargo build.
+Headless units, and graphical units whose `simulator-graphical` has `--port` (detected per
+binary), start their simulator on a free port and run side by side; no network namespace needed.
+Older graphical simulators bind 15423 only: each run goes into `isolated.sh` (private network
+namespace) where namespaces exist, else they run one at a time. The API suites hardcode 15423:
+concurrent in namespaces, else one at a time. Whether namespaces exist is probed once
+(`isolated.sh true`); `pr.json` `run_mode` and the report record what ran how. Every Xvfb picks
+its own display (`-displayfd`). Build outside a namespace (no network inside); `E2E_DRIVER=<path>`
+uses a prebuilt driver and skips the cargo build.
+
+A bundle that is reused does not need the merge-base simulator; it is built only to record a
+bundle or to add missing base-side graphical runs.
 
 ## WalletConnect flow (`e2e.py wc`, `wc/`)
 

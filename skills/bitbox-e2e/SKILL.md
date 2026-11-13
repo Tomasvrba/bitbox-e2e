@@ -7,11 +7,12 @@ Harness and usage: `e2e/README.md`; contract: `e2e/DESIGN.md`. Read the README b
 
 1. **Pick the mode.** Firmware or API behaviour on the device → `e2e/e2e.py pr` (default).
    App UI or backend → `e2e/e2e.py wallet-compare` with the Playwright tests that cover it.
-   Base is the upstream branch (`bitbox/master`); `pr` diffs against `merge-base(base, head)`.
+   Base is the upstream branch (`<remote>/master`, the remote pointing at
+   BitBoxSwiss/bitbox02-firmware; `git remote -v`); `pr` diffs against `merge-base(base, head)`.
    Head is the PR ref, or `WORKTREE` for uncommitted firmware. Done when both refs resolve with
    `git rev-parse`.
 2. **Run setup if needed.** `e2e/setup.sh` is idempotent and fast when installed.
-3. **Run** `e2e/e2e.py pr --base bitbox/master --head <ref> --out /tmp/e2e/<name>`, adding
+3. **Run** `e2e/e2e.py pr --base <remote>/master --head <ref> --out /tmp/e2e/<name>`, adding
    `--graphical <glob>` for units whose screenshots the reviewer needs (changed units get them
    anyway). The first run for a merge-base records its baseline (`e2e.py baseline <sha>`, every
    unit headless plus the API suites); later runs reuse it. New ref builds take ~4 min.
@@ -27,6 +28,9 @@ Harness and usage: `e2e/README.md`; contract: `e2e/DESIGN.md`. Read the README b
    - *Unreached changed functions*: changed firmware code no unit executes, and changed files the
      coverage map cannot see (C, protos, token lists). If non-empty, run the draft procedure below
      before reporting.
+   - A note under the header table that the harness or another revision under test (the
+     `bitbox-api-rs` tree the driver links, the API repos) differs between base and head: a
+     difference may come from that rather than the firmware; check before attributing it.
    Done when every differing screen and every failure is explained as the intended change, a
    regression, or noise (capture timing, hover state).
 5. **Report**: the screen-level change in one or two sentences, lane B pass/fail, each

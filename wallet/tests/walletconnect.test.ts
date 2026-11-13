@@ -5,8 +5,7 @@
 // requests. The app approves them and the graphical simulator (wc/device.py) confirms on device.
 // Evidence goes to $WC_OUT: app/*.png + app/steps.json, device/*.png + device/frames.json.
 //
-// Env: WC_OUT, WC_DAPP (dapp.mjs), WC_DEVICE (device.py), SIMULATOR_DIR (has simulator-graphical),
-// E2E_DISPLAY (Xvfb display for the simulator).
+// Env: WC_OUT, WC_DAPP (dapp.mjs), WC_DEVICE (device.py), SIMULATOR_DIR (has simulator-graphical).
 
 import { expect, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'child_process';
@@ -166,7 +165,6 @@ test('WalletConnect: dapp requests confirmed on the device', async ({ page, host
     deleteConfigFile();
     device = new LineProc('device', env('WC_DEVICE'), [
       '--sim-dir', env('SIMULATOR_DIR'), '--out', path.join(out, 'device'),
-      '--display', process.env.E2E_DISPLAY || ':72',
     ], path.join(out, 'device.log'));
     await device.next('ready', 120_000);
     servewallet = new ServeWallet(page, servewalletPort, frontendPort, host, testInfo.outputDir,

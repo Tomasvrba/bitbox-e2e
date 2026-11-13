@@ -14,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-import units
+import bundle
 
 SETUP_STEPS = {"boot", "connect", "pairing", "seed"}
 
@@ -122,13 +122,12 @@ def promote(scenario_path, screens, simulator_version):
 
 
 def main():
-    e2e_dir = Path(__file__).resolve().parent
     cmd, args = sys.argv[1], sys.argv[2:]
     screens = json.loads(Path(args[1]).read_text())
     version = Path(args[2]).read_text()
     if cmd == "check":
-        fw = Path(args[3]) if len(args) > 3 else e2e_dir.parent / "bitbox02-firmware"
-        unit = next((u for u in units.load_units(fw, e2e_dir / "scenarios") if u["id"] == args[0]), None)
+        fw = Path(args[3]) if len(args) > 3 else bundle.FW
+        unit = next((u for u in bundle.load_units(fw) if u["id"] == args[0]), None)
         if unit is None:
             sys.exit(f"unknown unit {args[0]}")
         res = check(unit, screens, version)

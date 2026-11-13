@@ -45,6 +45,7 @@ need xz xz-utils
 need unzip unzip
 need gcc gcc
 need make make
+need c++ g++               # bitbox-api-rs's tests compile libbitcoinconsensus
 need pkg-config pkg-config
 need python3 python3
 need sha256sum coreutils
@@ -68,10 +69,20 @@ need_lib libXrender.so.1 libxrender1
 need_lib libxkbcommon-x11.so.0 libxkbcommon-x11-0
 [ -e /usr/lib/x86_64-linux-gnu/dri/swrast_dri.so ] || [ -e /usr/lib64/dri/swrast_dri.so ] ||
   apt_missing+=("swrast_dri.so:libgl1-mesa-dri")
+# bitbox-api-rs's simulator tests link the system OpenSSL (openssl-sys) and libstdc++ (bitcoinconsensus).
+pkg-config --exists openssl 2>/dev/null || apt_missing+=("openssl.pc:libssl-dev")
+# rustc links with cc, and a GCC only finds its own version's libstdc++: the firmware dev container
+# has cc = gcc-10 next to g++-11. Linked to a temp file; as root, ld may replace /dev/null.
+if command -v cc >/dev/null; then
+  probe="$(mktemp)"
+  echo 'int main(void) { return 0; }' | cc -x c - -lstdc++ -o "$probe" 2>/dev/null ||
+    apt_missing+=("libstdc++ for cc:libstdc++-$(cc -dumpversion | cut -d. -f1)-dev")
+  rm -f "$probe"
+fi
 for t in rustup cargo; do command -v "$t" >/dev/null || other_missing+=("$t"); done
 
 if [ ${#apt_missing[@]} -gt 0 ] || [ ${#other_missing[@]} -gt 0 ]; then
-  echo "setup.sh: missing prerequisites for build-sim.sh and the units:" >&2
+  echo "setup.sh: missing prerequisites for build-sim.sh, the units and the API suites:" >&2
   for m in "${apt_missing[@]}"; do printf '  %-24s package %s\n' "${m%%:*}" "${m#*:}" >&2; done
   for m in "${other_missing[@]}"; do printf '  %-24s install rustup without root: https://rustup.rs\n' "$m" >&2; done
   if [ ${#apt_missing[@]} -gt 0 ]; then

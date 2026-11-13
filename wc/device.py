@@ -9,7 +9,7 @@ Starts Xvfb + simulator-graphical (preseeded), finishes the orientation screen, 
 like e2e.py run_graphical: every new stable screen is captured, then accepted (tap top-right, then
 hold-to-confirm). Never rejects. The host is whoever connects to 127.0.0.1:15423 (the app backend).
 
-  device.py --sim-dir <dir> --out <dir> [--display :72]
+  device.py --sim-dir <dir> --out <dir>
 
 stdin, one command per line; stdout, one JSON event per line:
   -> {"event": "ready"}                       simulator accepts clients
@@ -21,7 +21,6 @@ stdin, one command per line; stdout, one JSON event per line:
 
 import argparse
 import json
-import os
 import re
 import select
 import shutil
@@ -48,7 +47,6 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--sim-dir", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--display", default=os.environ.get("E2E_DISPLAY", ":72"))
     args = p.parse_args()
 
     out = Path(args.out)
@@ -58,12 +56,12 @@ def main():
     memdir = out / "fake-memory"
     shutil.rmtree(memdir, ignore_errors=True)
     memdir.mkdir()
-    xvfb = gsim.Xvfb(args.display, out / "xvfb.log")
+    xvfb = gsim.Xvfb(out / "xvfb.log")
     sim = None
     frames = []
     step = "boot"
     try:
-        sim = gsim.GraphicalSim(str(Path(args.sim_dir) / "simulator-graphical"), args.display,
+        sim = gsim.GraphicalSim(str(Path(args.sim_dir) / "simulator-graphical"), xvfb.disp,
                                 str(out / "simulator.log"), str(memdir))
 
         def capture(h):
