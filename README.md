@@ -28,6 +28,14 @@ firmware dev container (`shiftcrypto/firmware_v2`). uv, cmake, ast-grep (invoked
 mise's `node@26` nor the `PATH` node is 26) and anvil (Rabby flow) are downloaded at pinned
 versions. Builds, clones and baselines go to `~/.cache/bitbox-e2e` (`$BITBOX_E2E_CACHE`).
 
+Pins: every `setup.sh` download is checked against the sha256 next to its version before it is
+unpacked. To bump one, set the version, download that exact file, compare its `sha256sum` with the
+publisher's (GitHub release asset digest, go.dev/dl, nodejs `SHASUMS256.txt`, PyPI for the cmake
+wheel) and pin it. Python deps are locked per script in `<script>.py.lock` (uv >= 0.5.17, else
+`setup.sh` installs its pinned uv; mitmproxy runs from `rabby/mitmdump.py`). After changing a
+script's dependencies or to upgrade, run `uv lock --script <script>.py [--upgrade]` and commit the
+lock; `uv lock --script <script>.py --check` fails on a stale one (`uv run` rewrites stale locks).
+
 Reported at the end without failing: `isolated.sh` needs unprivileged user namespaces (Ubuntu
 23.10+ restricts them via AppArmor, Docker's default seccomp profile blocks them; `isolated.sh
 true` fails with the reason), and the browser flows need Playwright Chromium's system libraries

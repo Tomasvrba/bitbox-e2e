@@ -161,7 +161,7 @@ def cmd_map(args):
                                   stdout=subprocess.PIPE, text=True).stdout.strip().splitlines()[-1])
     e2e.ensure_driver()
     unit_ids = [u["id"] for u in load_units(sha)]
-    work = Path(args.work or f"/tmp/e2e-cov/{sha[:12]}")
+    work = Path(args.work or CACHE / "cov-work" / sha[:12])
     shutil.rmtree(work, ignore_errors=True)
     log(f"{len(unit_ids)} units, {args.jobs} shards, work dir {work}")
     # Shards run side by side: every headless run picks its own port.
@@ -370,7 +370,7 @@ def main():
     p = sub.add_parser("map")
     p.add_argument("ref")
     p.add_argument("-j", "--jobs", type=int, default=bundle.JOBS)
-    p.add_argument("--work", help="profiles and per-unit logs (default /tmp/e2e-cov/<sha>)")
+    p.add_argument("--work", help="profiles and per-unit logs (default $BITBOX_E2E_CACHE/cov-work/<sha>)")
     p = sub.add_parser("select")
     p.add_argument("--base", required=True)
     p.add_argument("--head", required=True)

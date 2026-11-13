@@ -45,7 +45,7 @@ SETUP_STEPS = {"boot", "setup"}
 def ensure_dapp():
     if not (WC_DIR / "node_modules" / "@walletconnect" / "sign-client").exists():
         e2e.log("wc: npm ci (dapp)")
-        subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=WC_DIR, check=True, stdout=sys.stderr)
+        subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=WC_DIR, check=True, stdout=sys.stderr)
 
 
 def check_ports():

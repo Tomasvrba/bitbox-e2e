@@ -664,10 +664,18 @@ def fmt_ok(v):
 
 
 def md_to_html(out, md):
-    """Tiny renderer for the subset report() emits, with images inlined so the file stands alone."""
+    """Tiny renderer for the subset report() emits, with images inlined so the file stands alone.
+    Report lines carry text from the code under test (unit ids, test names, error messages), so
+    nothing in them may pick a file to read or reach the page as markup."""
+    root = Path(out).resolve()
+
     def img(m):
-        data = base64.b64encode((out / m.group(2)).read_bytes()).decode()
-        return f'<img title="{html.escape(m.group(1))}" src="data:image/png;base64,{data}">'
+        path = (root / html.unescape(m.group(2))).resolve()
+        # Only the report's own images: `![x](/etc/passwd)` in a test name must not embed that file.
+        if not path.is_relative_to(root) or path.suffix != ".png" or not path.is_file():
+            return m.group(0)
+        data = base64.b64encode(path.read_bytes()).decode()
+        return f'<img title="{html.escape(html.unescape(m.group(1)))}" src="data:image/png;base64,{data}">'
 
     def inline(s):
         s = html.escape(s, quote=False)
@@ -706,8 +714,12 @@ def md_to_html(out, md):
                 i += 1
             body.append("<ul>" + "".join(items) + "</ul>")
             continue
-        if line.startswith("<"):
-            body.append(line if "summary" in line or "details" in line else html.escape(line))
+        if line == "</details>":
+            body.append(line)
+        elif m := re.fullmatch(r"<details><summary>(.*)</summary>", line):
+            body.append(f"<details><summary>{html.escape(m[1])}</summary>")
+        elif line.startswith("<"):
+            body.append(html.escape(line))
         elif line.startswith("### "):
             body.append(f"<h3>{inline(line[4:])}</h3>")
         elif line.startswith("## "):

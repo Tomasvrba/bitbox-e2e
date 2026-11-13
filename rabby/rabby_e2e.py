@@ -22,6 +22,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -81,17 +82,16 @@ def ensure_tools():
     if not bundle.namespaces():
         raise SystemExit("the Rabby flow runs in isolated.sh, which needs network namespaces; unavailable here")
     if not (RABBY_DIR / "node_modules" / "playwright").exists():
-        subprocess.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=RABBY_DIR, check=True, stdout=sys.stderr)
+        subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=RABBY_DIR, check=True, stdout=sys.stderr)
     subprocess.run(["npx", "playwright", "install", "chromium"], cwd=RABBY_DIR, check=True, stdout=sys.stderr)
     # uv caches script environments; populate them while we have network.
     for cmd in ([str(E2E_DIR / "bridge" / "sim_bridge.py"), "--help"],
-                ["uv", "run", "--no-project", "--with", "mitmproxy==11.0.2", "mitmdump", "--version"],
+                [str(RABBY_DIR / "mitmdump.py"), "--version"],
                 [str(RABBY_DIR / "run.py"), "--help"]):
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
     anvil = bundle.TOOLS / "foundry" / "bin" / "anvil"
     if not anvil.exists():
-        raise SystemExit(f"anvil missing at {anvil}: download foundry_stable_linux_amd64.tar.gz from "
-                         "github.com/foundry-rs/foundry/releases and unpack it into that bin/ directory")
+        raise SystemExit(f"anvil missing at {anvil}: run e2e/setup.sh")
 
 
 def run_flow(sim_dir, dist, out, record_sock=None):
@@ -122,8 +122,9 @@ def cmd_record(args):
     fixture = out / "rabby-api.json.gz"
     out.mkdir(parents=True, exist_ok=True)
     fixture.unlink(missing_ok=True)
-    sock = f"/tmp/bitbox-e2e-rabby-{os.getpid()}.sock"
-    procs = [subprocess.Popen(["uv", "run", "--no-project", "--with", "mitmproxy==11.0.2", "mitmdump", "--listen-host",
+    # In a private directory: a predictable /tmp name could be claimed by another user first.
+    sock = str(Path(tempfile.mkdtemp(prefix="bitbox-e2e-rabby-")) / "proxy.sock")
+    procs = [subprocess.Popen([str(RABBY_DIR / "mitmdump.py"), "--listen-host",
                                "127.0.0.1", "-p", str(port), "-s", str(RABBY_DIR / "api_proxy.py"),
                                "--set", f"fixture={fixture}", "--set", "record=true"],
                               stdout=open(out / "record-proxy.log", "w"), stderr=subprocess.STDOUT),

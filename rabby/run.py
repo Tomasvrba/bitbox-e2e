@@ -52,7 +52,7 @@ TOKENS = {1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 42161: "0xaf88d065e77
 PROXY_PORT = 18088
 DAPP_PORT = 8080
 FIXTURE = RABBY_DIR / "fixtures" / "rabby-api.json.gz"
-MITMPROXY = "mitmproxy==11.0.2"
+MITMDUMP = RABBY_DIR / "mitmdump.py"
 # Device setup: unlock, pairing code (random per run) and the idle screens around it.
 SETUP_STEPS = {"boot", "pairing"}
 
@@ -176,7 +176,7 @@ def main():
                                            f"127.0.0.1:{PROXY_PORT}", args.record_sock]))
         else:
             procs.append(subprocess.Popen(
-                ["uv", "run", "--no-project", "--with", MITMPROXY, "mitmdump", "--listen-host", "127.0.0.1",
+                [str(MITMDUMP), "--listen-host", "127.0.0.1",
                  "-p", str(PROXY_PORT), "-s", str(RABBY_DIR / "api_proxy.py"), "--set", f"fixture={FIXTURE}",
                  # Lazy: don't resolve/connect upstream on CONNECT (there is no upstream in here).
                  "--set", "connection_strategy=lazy"],
