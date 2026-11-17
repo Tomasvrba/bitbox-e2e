@@ -297,6 +297,32 @@ its untracked files cannot leak into the build. Results are cached by commit sha
   time out the request ("error querying device info"); keep concurrent graphical runs at about
   half the cores and use `nice`.
 
+## CI
+
+`.github/workflows/pr.yml` (*firmware change*, manual trigger): base and head of a firmware change,
+optionally the fork holding head. It runs on `ubuntu-24.04` with no secrets and a read-only token,
+checks out BitBoxSwiss firmware and the three API repos next to this one, and runs
+
+```sh
+sudo e2e/ci/prereqs.sh                                             # apt packages, user namespaces
+e2e/ci/pr.sh --base master --head <branch|commit> [--head-repo <owner>/<repo>] --out <dir>
+```
+
+`pr.sh` resolves the refs, runs `setup.sh` and `e2e.py pr`, and exits with its code. The report
+directory is the `e2e-report` artifact; its top (revisions, verdict, summary) is the run's summary.
+Only the tools directory is cached (`actions/cache`, keyed by `setup.sh`).
+
+The same job on this machine, in a bare Ubuntu 24.04 container with 4 CPUs and 16G, cloned from the
+sibling checkouts so head can be an unpushed branch:
+
+```sh
+e2e/ci/local.sh --base master --head my-branch --out /tmp/e2e/ci
+```
+
+Docker allows no user namespaces, so there the fixed-port runs go one at a time. With tools installed
+and both simulators to build it takes ~35 min (v9.28.0 against a one-commit branch); `$E2E_CI_HOME`
+(default `~/.cache/bitbox-e2e-ci`, ~9G after a run) is the container's home, kept between runs.
+
 ## Harness tests
 
 ```sh

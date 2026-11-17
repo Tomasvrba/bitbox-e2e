@@ -1,0 +1,80 @@
+name: firmware change
+
+# Manual for now: runs one firmware change against its merge-base and uploads the report.
+# The job is ci/pr.sh; ci/local.sh runs the same script in a container.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base, a branch of BitBoxSwiss/bitbox02-firmware or a commit
+        default: master
+      head:
+        description: Head, a branch or commit
+        required: true
+      head_repo:
+        description: Fork holding head (owner/repo). Empty when head is in BitBoxSwiss/bitbox02-firmware.
+        default: ''
+
+# Firmware and API code from the refs above builds and runs here: no secrets, read-only token.
+permissions:
+  contents: read
+
+jobs:
+  pr:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      # The harness finds its siblings next to a checkout named e2e.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: e2e
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: BitBoxSwiss/bitbox02-firmware
+          path: bitbox02-firmware
+          fetch-depth: 0  # merge-base of base and head
+          submodules: recursive
+          persist-credentials: false
+      # Full history: the API suites run from `git clone --shared` copies of these.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: BitBoxSwiss/bitbox-api-rs
+          path: bitbox-api-rs
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: BitBoxSwiss/bitbox02-api-go
+          path: bitbox02-api-go
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: BitBoxSwiss/bitbox-api-ts
+          path: bitbox-api-ts
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Root prerequisites
+        run: sudo e2e/ci/prereqs.sh
+
+      # What setup.sh downloads (LLVM, protoc, cmocka, uv, cmake, ast-grep, node, anvil): ~2G.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/share/bitbox-e2e/tools
+          key: tools-${{ runner.os }}-${{ hashFiles('e2e/setup.sh') }}
+
+      - name: e2e.py pr
+        env:
+          BASE: ${{ inputs.base }}
+          HEAD: ${{ inputs.head }}
+          HEAD_REPO: ${{ inputs.head_repo }}
+        run: e2e/ci/pr.sh --base "$BASE" --head "$HEAD" ${HEAD_REPO:+--head-repo "$HEAD_REPO"} --out "$RUNNER_TEMP/report"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ !cancelled() }}
+        with:
+          name: e2e-report
+          path: ${{ runner.temp }}/report
+          if-no-files-found: warn
