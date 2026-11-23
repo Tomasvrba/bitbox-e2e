@@ -112,6 +112,11 @@ jobs:
           e2e/ci/pr.sh --repo "$REPO" ${BASE:+--base "$BASE"} --head "$HEAD" ${HEAD_REPO:+--head-repo "$HEAD_REPO"}
           --pins "$PINS" --graphical "$GRAPHICAL" --tests "$TESTS" $WC --out "$RUNNER_TEMP/report"
 
+      # A runner out of disk or memory gets cancelled without a word in the log.
+      - name: Disk and memory
+        if: ${{ !success() }}
+        run: df -h / "$RUNNER_TEMP" ~; free -m
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
