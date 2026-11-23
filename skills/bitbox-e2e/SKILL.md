@@ -1,21 +1,22 @@
 ---
 name: bitbox-e2e
-description: End-to-end check of a firmware, host-API or BitBoxApp change against the BitBox02 simulators, producing a base-vs-head diff report with device screenshots. Use when asked to e2e-test, verify on the simulator, or attach screenshot evidence to a PR.
+description: End-to-end check of a firmware, host-API, BitBoxApp or Rabby change against the BitBox02 simulators, producing a base-vs-head diff report with device screenshots. Use when asked to e2e-test, verify on the simulator, or attach screenshot evidence to a PR.
 ---
 
-Harness and usage: `e2e/README.md`; contract: `e2e/DESIGN.md`. Read the README before the first run.
+Harness and usage: `e2e/README.md`, details in `e2e/docs/reference.md`; contract: `e2e/DESIGN.md`.
+Read the README before the first run.
 
-1. **Pick the mode.** Firmware or API behaviour on the device → `e2e/e2e.py pr` (default).
-   App UI or backend → `e2e/e2e.py wallet-compare` with the Playwright tests that cover it.
-   Base is the upstream branch (`<remote>/master`, the remote pointing at
-   BitBoxSwiss/bitbox02-firmware; `git remote -v`); `pr` diffs against `merge-base(base, head)`.
-   Head is the PR ref, or `WORKTREE` for uncommitted firmware. Done when both refs resolve with
-   `git rev-parse`.
+1. **Pick the repo.** `--repo` is where the change is: `firmware` (default), `api-rs`, `api-go`,
+   `api-ts`, `app` or `rabby`. Base defaults to the upstream default branch (the remote pointing at
+   the upstream repo; `git remote -v`); `pr` diffs against `merge-base(base, head)`. Head is the PR
+   ref, or `WORKTREE` for uncommitted firmware. A PR that needs an unreleased change in another repo:
+   `--pin <repo>=<ref>` (e.g. a firmware PR that needs an api-rs branch for its new call). Done when
+   both refs resolve with `git rev-parse` in that repo's checkout.
 2. **Run setup if needed.** `e2e/setup.sh` is idempotent and fast when installed.
-3. **Run** `e2e/e2e.py pr --base <remote>/master --head <ref> --out /tmp/e2e/<name>`, adding
+3. **Run** `e2e/e2e.py pr [--repo <repo>] --head <ref> --out /tmp/e2e/<name>`. Firmware/API: add
    `--graphical <glob>` for units whose screenshots the reviewer needs (changed units get them
-   anyway). The first run for a merge-base records its baseline (`e2e.py baseline <sha>`, every
-   unit headless plus the API suites); later runs reuse it. New ref builds take ~4 min.
+   anyway); the first run for a merge-base records its baseline, later runs reuse it. App: `--tests
+   <file>...` to run fewer than all tests, `--wc` for the WalletConnect flow.
 4. **Read `report.md`.** The *Verdict* section and the exit code (0 clean, 1 regression, 2
    harness error) say whether anything that worked on the merge-base broke.
    - Lane A, evidence: *Changed units* and *New units* are what the change looks like on the
@@ -66,11 +67,9 @@ Authors may add to the PR description:
 ```
 <!-- e2e
 graphical: btc-vector/*fee*
-api-rs: <branch or sha>   # when the PR needs an unreleased API call
+pins: api-rs=<branch or sha>   # when the PR needs an unreleased API call
 -->
 ```
 
-`graphical` is `--graphical` (`units` is obsolete: every unit runs headless), `api-rs`
-builds the driver against that `bitbox-api-rs` revision. Planned: CI is to parse it; `e2e.py`
-does not yet. By hand: pass the globs as `--graphical` (which also adds them to the run), and for
-`api-rs` check out that revision in the sibling `bitbox-api-rs` and rebuild the driver.
+They are the `--graphical` and `--pin` options (the workflow's Graphical and Pins fields). Planned:
+CI is to parse the block; today pass them by hand.

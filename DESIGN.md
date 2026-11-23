@@ -1,6 +1,6 @@
 # Design: automatic e2e evidence and regression per PR
 
-Goal: every firmware/API/app change gets an automatic e2e run that (A) shows the maintainer what
+Goal: every firmware, API, app or Rabby change gets an automatic e2e run that (A) shows the maintainer what
 the change looks like on the device, as screens that differ from the merge-base, and (B) flags
 anything pre-existing that broke. Expected results are optional; they accumulate when a
 maintainer promotes approved screens.
@@ -15,11 +15,31 @@ maintainer promotes approved screens.
   once with their committed vector copies (drift) and once with the firmware's vectors.
 
 The report is the product; the gate is secondary and fires only on regressions against the
-merge-base. `pr` exits 1 when a unit that completed on base fails on head, or when, with the
-firmware's vectors, an API test that passed on base fails on head or an API suite errors on head
-(build, crash, no tests ran); 2 when the harness itself fails; else 0. Expectation mismatches,
-changed screens and failures with the API repos' committed vector copies (drift) are reported,
-never gating. `e2e.verdict` computes the reasons from `pr.json` data.
+merge-base. `pr` exits 1 when a unit that completed on base fails on head, or when an API test
+that passed on base fails on head or an API suite errors on head (build, crash, no tests ran); 2
+when the harness itself fails; else 0. For a firmware change only the API run with the firmware's
+vectors gates; failures with the API repos' committed vector copies are drift, reported only. For
+an API change both runs gate. Expectation mismatches and changed screens are reported, never
+gating. `e2e.verdict` computes the reasons from `pr.json` data.
+
+## The repo under test
+
+`e2e.py pr --repo <repo>` takes base and head in one of `bundle.REPOS` (firmware, app, api-rs,
+api-go, api-ts, rabby) and compares head with `merge-base(base, head)` in that repo. Every other
+repo is the same on both sides: its `--pin <repo>=<ref>`, else the default (upstream `master` for
+the firmware; the sibling checkout's `HEAD` for the API repos, which in CI is the upstream default
+branch).
+
+- firmware, api-*: lanes A and B. A side is (firmware commit, API revisions); the base side is a
+  bundle, keyed by the firmware sha and, if any API revision is pinned, a hash of those revisions.
+  The driver links the side's `api-rs` (`runs.driver_for`: the pinned commit, built in a cache
+  layout that satisfies its `../../bitbox-api-rs` path dependency; else the sibling tree).
+- app: `wallet_app.cmd_app_change`, the app's Playwright tests at both commits on one simulator,
+  optionally the WalletConnect flow.
+- rabby: `rabby_e2e.cmd_rabby_change`, the Rabby flow with Rabby built at both commits.
+
+`ci/pr.sh` is the same entry point for CI: it validates the form's inputs, fetches head from a fork
+and passes commits to `e2e.py pr`.
 
 ## Units
 
@@ -50,11 +70,11 @@ Screens are the `screens.json` list `run_headless` writes (headless simulator tr
 
 ## Baseline bundle
 
-`e2e.py baseline <firmware-ref> [--graphical <glob>...]` writes
-`$BITBOX_E2E_CACHE/baselines/<sha>/`:
+`e2e.py baseline <firmware-ref> [--pin <api repo>=<ref>...] [--graphical <glob>...]` writes
+`$BITBOX_E2E_CACHE/baselines/<sha>/` (with pins `<sha>-<pins hash>/`):
 
 ```
-manifest.json                 {sha, simulator_version, harness_sha, created, revisions, units: {id: {headless_ok, graphical_ok}}}
+manifest.json                 {sha, simulator_version, harness_sha, created, pins, revisions, units: {id: {headless_ok, graphical_ok}}}
 units/<id-slug>/headless/     screens.json, combined.log, driver.jsonl
 units/<id-slug>/graphical/    frames.json, *.png      (only units selected for graphical)
 apis/                         lane-B results for this ref
@@ -66,8 +86,9 @@ coverage/map.json             function -> unit ids (from the instrumented build)
 (`head.revisions`); the report flags differences without gating. A ref without the firmware's BTC
 vectors file has no btc-vector units and no firmware-vector API run (`base.vectors`/`head.vectors`).
 
-PR runs reuse it (keyed by the merge-base sha) and only run head. CI publishes the directory as a
-tarball (release asset); locally it lives in the cache.
+PR runs reuse it (keyed by the merge-base sha) and only run head. It lives in the cache; a manifest
+without the current `format` (`bundle.BUNDLE_FORMAT`) is recorded again. Planned: CI publishes
+bundles and prebuilt simulators as release files of this repo, so runs skip recording them.
 
 ## Coverage map and selection
 
@@ -88,7 +109,9 @@ Older graphical simulators bind 15423 only: each run goes into `isolated.sh` (pr
 namespace) where namespaces exist, else they run one at a time. The API suites hardcode 15423:
 concurrent in namespaces, else one at a time. Whether namespaces exist is probed once
 (`isolated.sh true`); `pr.json` `run_mode` and the report record what ran how. Every Xvfb picks
-its own display (`-displayfd`). Build outside a namespace (no network inside); `E2E_DRIVER=<path>`
+its own display (`-displayfd`). In a namespace Xvfb takes `:0` without a lock file, so
+`isolated.sh` also gives each namespace a private `/tmp/.X11-unix`: python-xlib connects to the
+socket file there before the per-netns abstract socket. Build outside a namespace (no network inside); `E2E_DRIVER=<path>`
 uses a prebuilt driver and skips the cargo build.
 
 A bundle that is reused does not need the merge-base simulator; it is built only to record a
