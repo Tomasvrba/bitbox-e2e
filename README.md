@@ -160,7 +160,7 @@ For ad-hoc scenarios that are not units yet (e.g. while drafting one), or a gene
 
 Each headless run starts its simulator on a free port (`--port`), so units run side by side
 without anything else. Graphical runs do the same when the ref's `simulator-graphical` has
-`--port` (detected per binary from `--help`; firmware before 2a974858a has none). Without it, it
+`--port` (detected per binary from `--help`; firmware before a540c993b has none). Without it, it
 always binds 15423: each run then goes into its own network namespace (`isolated.sh <cmd>`,
 unprivileged, loopback only), or, where namespaces are unavailable (most CI containers;
 `isolated.sh true` says why), runs one at a time. The API suites connect to 15423 too: in

@@ -157,7 +157,7 @@ def namespaces():
 
 @functools.cache
 def takes_port(sim_dir):
-    """Whether this simulator-graphical has --port. Firmware before 2a974858a always binds 15423."""
+    """Whether this simulator-graphical has --port. Firmware before a540c993b always binds 15423."""
     try:
         r = subprocess.run([str(Path(sim_dir) / "simulator-graphical"), "--help"], stdout=subprocess.PIPE,
                            stderr=subprocess.DEVNULL, text=True, timeout=30)
