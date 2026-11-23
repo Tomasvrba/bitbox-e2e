@@ -8,7 +8,7 @@ publish = false
 [workspace]
 
 [dependencies]
-# Path dep so scenarios exercise the sibling checkout (or a PR clone via BITBOX_API_RS override in run.py).
+# Path dep: scenarios exercise the sibling bitbox-api-rs checkout.
 bitbox-api = { path = "../../bitbox-api-rs", features = ["simulator", "tokio", "multithreaded"] }
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 serde = { version = "1", features = ["derive"] }

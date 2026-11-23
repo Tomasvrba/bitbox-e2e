@@ -1,5 +1,5 @@
 // Runs a scenario file against a simulator and prints one JSON event per line.
-// The orchestrator (run.py) uses the events to label screenshots and to know when a step is done.
+// The harness (runs.py) uses the events to label screenshots and to know when a step is done.
 //
 // Usage: bitbox-e2e-driver <scenario.json> [endpoint]
 
@@ -35,7 +35,7 @@ enum Step {
         data: String,
     },
     // kebab-case alone would make this `eth-sign1559`.
-    #[serde(rename = "eth-sign-1559", alias = "eth-sign1559")]
+    #[serde(rename = "eth-sign-1559")]
     EthSign1559 {
         name: String,
         chain_id: u64,
