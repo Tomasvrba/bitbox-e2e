@@ -4,6 +4,7 @@
   graphical/ graphical simulator on Xvfb, driven by XTest, one PNG per distinct LCD frame
 """
 
+import hashlib
 import json
 import os
 import queue
@@ -29,6 +30,36 @@ def ensure_driver():
     subprocess.run(["cargo", "build", "--release", "-q"], cwd=E2E_DIR / "driver", check=True)
     # Unit runs in isolated.sh have no network, so they must not build it again.
     os.environ["E2E_DRIVER"] = str(DRIVER)
+
+
+def driver_for(api_rs=None):
+    """Driver binary linking bitbox-api-rs at commit api_rs; None: the sibling checkout as it is
+    (or E2E_DRIVER). Cached by api_rs and the driver's own sources."""
+    if api_rs is None:
+        ensure_driver()
+        return Path(os.environ["E2E_DRIVER"])
+    src = E2E_DIR / "driver"
+    files = [src / "Cargo.toml", src / "Cargo.lock", *sorted((src / "src").rglob("*.rs"))]
+    h = hashlib.sha256(b"".join(f.read_bytes() for f in files)).hexdigest()[:12]
+    out = bundle.CACHE / "drivers" / f"{api_rs}-{h}" / "bitbox-e2e-driver"
+    if out.exists():
+        return out
+    # The driver's path dependency is ../../bitbox-api-rs: the same layout around a clone at api_rs.
+    root = bundle.CACHE / "src" / "driver-api-rs"
+    api = root / "bitbox-api-rs"
+    if not (api / ".git").exists():
+        subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(bundle.REPOS["api-rs"].dir), str(api)],
+                       check=True)
+    subprocess.run(["git", "-C", str(api), "checkout", "-q", "-f", "--detach", api_rs], check=True)
+    shutil.rmtree(root / "e2e" / "driver" / "src", ignore_errors=True)
+    shutil.copytree(src, root / "e2e" / "driver", dirs_exist_ok=True, ignore=shutil.ignore_patterns("target"))
+    log(f"building driver with bitbox-api-rs {api_rs[:9]}")
+    target = bundle.CACHE / "drivers" / "target"
+    subprocess.run(["cargo", "build", "--release", "-q", "--target-dir", str(target)], cwd=root / "e2e" / "driver",
+                   check=True)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(target / "release" / "bitbox-e2e-driver", out)
+    return out
 
 
 QUIET_S = 0.3

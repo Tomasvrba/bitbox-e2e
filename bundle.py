@@ -6,6 +6,7 @@ Bundle layout ($BITBOX_E2E_CACHE/baselines/<sha>/, see DESIGN.md):
 """
 
 import functools
+import hashlib
 import json
 import os
 import re
@@ -15,6 +16,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import NamedTuple
 
 import units
 from units import slug  # noqa: F401  (re-exported for e2e.py)
@@ -27,6 +29,24 @@ TOOLS = Path(os.environ.get("BITBOX_E2E_TOOLS", Path(os.environ.get(
     "BITBOX_E2E_HOME", Path.home() / ".local" / "share" / "bitbox-e2e")) / "tools"))
 FW = Path(os.environ.get("BITBOX_FIRMWARE", WORKSPACE / "bitbox02-firmware"))
 SCENARIOS = E2E_DIR / "scenarios"
+
+
+class Repo(NamedTuple):
+    dir: Path
+    slug: str  # on GitHub
+    branch: str  # default branch
+
+
+# The repos a change under test can be in (`e2e.py pr --repo`), checked out next to e2e/.
+REPOS = {
+    "firmware": Repo(FW, "BitBoxSwiss/bitbox02-firmware", "master"),
+    "app": Repo(Path(os.environ.get("BITBOX_WALLET_APP", WORKSPACE / "bitbox-wallet-app")),
+                "BitBoxSwiss/bitbox-wallet-app", "master"),
+    "api-rs": Repo(WORKSPACE / "bitbox-api-rs", "BitBoxSwiss/bitbox-api-rs", "master"),
+    "api-go": Repo(WORKSPACE / "bitbox02-api-go", "BitBoxSwiss/bitbox02-api-go", "master"),
+    "api-ts": Repo(WORKSPACE / "bitbox-api-ts", "BitBoxSwiss/bitbox-api-ts", "master"),
+    "rabby": Repo(Path(os.environ.get("BITBOX_RABBY", WORKSPACE / "Rabby")), "RabbyHub/Rabby", "develop"),
+}
 FW_VECTORS = units.VECTORS_PATH
 # Where the API simulator suites, the app's simulator mode and graphical simulators without --port
 # connect. Everything else gets a free port.
@@ -45,8 +65,13 @@ def git(*args, cwd=None):
                           check=True).stdout.strip()
 
 
-def resolve(ref):
-    return git("rev-parse", "HEAD") if ref == "WORKTREE" else git("rev-parse", "--verify", f"{ref}^{{commit}}")
+def resolve(ref, repo="firmware"):
+    """Commit sha of ref in one of REPOS. WORKTREE is the firmware checkout's HEAD (build-sim.sh
+    builds its files as they are)."""
+    cwd = REPOS[repo].dir
+    if ref == "WORKTREE":
+        return git("rev-parse", "HEAD", cwd=cwd)
+    return git("rev-parse", "--verify", f"{ref}^{{commit}}", cwd=cwd)
 
 
 
@@ -68,8 +93,13 @@ def build_sim(ref):
     res = subprocess.run([str(E2E_DIR / "build-sim.sh"), ref], stdout=subprocess.PIPE, text=True, check=True)
     return Path(res.stdout.strip().splitlines()[-1])
 
-def bundle_dir(sha):
-    return CACHE / "baselines" / sha
+def bundle_dir(sha, revs=None):
+    """Bundle of a firmware commit. revs pins other repos ({"api-rs": sha, ...}); those bundles are
+    kept apart from the default one, which uses whatever the sibling checkouts had."""
+    if not revs:
+        return CACHE / "baselines" / sha
+    key = hashlib.sha256(json.dumps(revs, sort_keys=True).encode()).hexdigest()[:12]
+    return CACHE / "baselines" / f"{sha}-{key}"
 
 
 def checkout_rev(path):
@@ -93,8 +123,14 @@ def upstream_remote(repo, github_slug):
     return "origin"
 
 
+def default_ref(repo):
+    """The default branch of the upstream repo, e.g. bitbox/master in a developer's firmware clone."""
+    r = REPOS[repo]
+    return f"{upstream_remote(r.dir, r.slug)}/{r.branch}"
+
+
 def default_firmware_ref():
-    return f"{upstream_remote(FW, 'BitBoxSwiss/bitbox02-firmware')}/master"
+    return default_ref("firmware")
 
 
 def read_manifest(root):
@@ -210,9 +246,10 @@ def use_node():
         os.environ["PATH"] = node_bin + os.pathsep + os.environ.get("PATH", "")
 
 
-def run_units(sim_dir, unit_list, root, view, jobs):
+def run_units(sim_dir, unit_list, root, view, jobs, driver=None):
     """Runs `e2e.py device` per unit, `jobs` at a time, writing <root>/units/<slug>/. view is
-    "headless" or "graphical". Returns {id: ok}.
+    "headless" or "graphical"; driver is a driver binary (runs.driver_for), default E2E_DRIVER.
+    Returns {id: ok}.
 
     Headless units and graphical ones on a simulator with --port each pick a free port. Older
     graphical simulators always bind 15423: each runs in its own network namespace (isolated.sh), or
@@ -233,8 +270,9 @@ def run_units(sim_dir, unit_list, root, view, jobs):
             cmd = ["nice", *([str(E2E_DIR / "isolated.sh")] if isolate else []), sys.executable,
                    str(E2E_DIR / "e2e.py"), "device", "--scenario", str(d / "scenario.json"),
                    "--sim-dir", str(sim_dir), "--out", str(d), "--label", u["id"], skip]
+            env = dict(os.environ, **({"E2E_DRIVER": str(driver)} if driver else {}))
             with open(d / f"{view}.log", "w") as f:
-                subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, timeout=900)
+                subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, timeout=900, env=env)
         except subprocess.TimeoutExpired:
             error = "timeout"
         meta_path = d / "meta.json"

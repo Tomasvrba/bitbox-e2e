@@ -120,6 +120,7 @@ def test_ref_without_vectors_loads_the_other_units(tmp_path, monkeypatch):
     vectors.write_text('{"vectors": []}\n')
     new = commit_all(repo, "vectors")
     monkeypatch.setattr(bundle, "FW", repo)
+    monkeypatch.setitem(bundle.REPOS, "firmware", bundle.REPOS["firmware"]._replace(dir=repo))
     monkeypatch.setattr(bundle, "CACHE", tmp_path / "cache")
 
     old_dir = bundle.firmware_dir(old)

@@ -3,7 +3,7 @@
 
   apis.py <sim-dir> <firmware-vectors.json> <out-dir>
 
-Each suite runs twice, from scratch clones of the sibling checkout's HEAD:
+Each suite runs twice, from scratch clones of the sibling checkout's HEAD (or a pinned commit):
   committed  the repo's own copy of the BTC transaction vectors (drift vs. the firmware)
   firmware   the firmware ref's vectors copied in (regression of the firmware itself); skipped for
              refs without the vectors file
@@ -26,13 +26,14 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import bundle
-from bundle import CACHE, E2E_DIR, WORKSPACE
+from bundle import CACHE, E2E_DIR
 
 MODES = ("committed", "firmware")
+# Suite name = bundle.REPOS key; the repo's copy of the firmware's BTC transaction vectors.
 SUITES = {
-    "api-go": ("bitbox02-api-go", "api/firmware/testdata/btc-transaction-test-vectors.json"),
-    "api-rs": ("bitbox-api-rs", "tests/data/btc-transaction-test-vectors.json"),
-    "api-ts": ("bitbox-api-ts", "test/data/btc-transaction-test-vectors.json"),
+    "api-go": "api/firmware/testdata/btc-transaction-test-vectors.json",
+    "api-rs": "tests/data/btc-transaction-test-vectors.json",
+    "api-ts": "test/data/btc-transaction-test-vectors.json",
 }
 RS_FEATURES = "--features=simulator,tokio"
 
@@ -51,20 +52,18 @@ def release_binary(sim_dir):
     return links[0] if links else Path(sim_dir) / "simulator"
 
 
-def scratch_clone(suite, mode):
-    """Persistent per-(suite, mode) clone at the sibling's HEAD, so build dirs and node_modules
-    survive between runs while the two modes can build and run concurrently."""
-    repo, vectors = SUITES[suite]
-    src = WORKSPACE / repo
-    sha = subprocess.run(["git", "-C", str(src), "rev-parse", "HEAD"], stdout=subprocess.PIPE, text=True,
-                         check=True).stdout.strip()
-    dst = CACHE / "src" / f"{repo}-{mode}"
+def scratch_clone(suite, mode, sha=None):
+    """Persistent per-(suite, mode) clone at sha, default the sibling's HEAD, so build dirs and
+    node_modules survive between runs while the two modes can build and run concurrently."""
+    src = bundle.REPOS[suite].dir
+    sha = sha or bundle.git("rev-parse", "HEAD", cwd=src)
+    dst = CACHE / "src" / f"{src.name}-{mode}"
     if not (dst / ".git").exists():
+        # --shared: the clone sees every object of the sibling, including fetched fork commits.
         sh(["git", "clone", "-q", "--shared", "--no-checkout", str(src), str(dst)])
-    sh(["git", "-C", str(dst), "fetch", "-q", str(src), sha])
     # -f also restores the committed vectors file a previous firmware-mode run overwrote.
     sh(["git", "-C", str(dst), "checkout", "-q", "-f", "--detach", sha])
-    return dst, sha, dst / vectors
+    return dst, sha, dst / SUITES[suite]
 
 
 def build(suite, clone, env):
@@ -137,9 +136,9 @@ def suite_error(code, res):
     return None
 
 
-def run_one(suite, mode, sim_dir, fw_vectors, out, run_lock):
+def run_one(suite, mode, sim_dir, fw_vectors, out, run_lock, sha):
     t0 = time.time()
-    clone, sha, vectors = scratch_clone(suite, mode)
+    clone, sha, vectors = scratch_clone(suite, mode, sha)
     if mode == "firmware":
         shutil.copy(fw_vectors, vectors)
     env = dict(os.environ, SIMULATOR=str(release_binary(sim_dir)))
@@ -169,8 +168,9 @@ def run_one(suite, mode, sim_dir, fw_vectors, out, run_lock):
     return res
 
 
-def run(sim_dir, fw_vectors, out, suites=tuple(SUITES)):
-    """Returns {suite: {mode: result}} and writes it to <out>/results.json."""
+def run(sim_dir, fw_vectors, out, suites=tuple(SUITES), revs=None):
+    """Returns {suite: {mode: result}} and writes it to <out>/results.json. revs: {suite: sha} to
+    run instead of the sibling's HEAD."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     if "api-ts" in suites:
@@ -180,7 +180,8 @@ def run(sim_dir, fw_vectors, out, suites=tuple(SUITES)):
     run_lock = None if bundle.namespaces() else threading.Lock()
     jobs = [(s, m) for s in suites for m in modes]
     with ThreadPoolExecutor(len(jobs)) as ex:
-        futs = {j: ex.submit(run_one, *j, Path(sim_dir), Path(fw_vectors), out, run_lock) for j in jobs}
+        futs = {j: ex.submit(run_one, *j, Path(sim_dir), Path(fw_vectors), out, run_lock, (revs or {}).get(j[0]))
+                for j in jobs}
     results = {}
     for (s, m), f in futs.items():
         try:

@@ -1,5 +1,7 @@
-"""`e2e.py wallet-compare`: the app's Playwright tests on one simulator, app base vs head."""
+"""`e2e.py pr --repo app` and `e2e.py wallet-compare`: the app's Playwright tests on one simulator,
+app base vs head."""
 
+import argparse
 import difflib
 import json
 import os
@@ -13,7 +15,9 @@ from bundle import E2E_DIR, log
 from report import fmt_status, images_equal, md_to_html, pixel_diff, screen_lines, strip_ansi
 from runs import ScreenParser
 
-WALLET_REPO = Path(os.environ.get("BITBOX_WALLET_APP", bundle.WORKSPACE / "bitbox-wallet-app"))
+WALLET_REPO = bundle.REPOS["app"].dir
+# What the app's own CI installs for its tests (tests/util/aopp/server.py), on python3's PATH.
+TEST_PYTHON_DEPS = ("ecdsa==0.19.1", "bech32==1.2.0")
 # Volatile device screens in app tests: random pairing codes and the current time.
 VOLATILE_TITLES = {"Pairing code", "Is now?"}
 
@@ -44,10 +48,12 @@ def run_wallet(ref, sim_dir, tests, out):
     shutil.rmtree(web / "test-results", ignore_errors=True)
     (web / "e2e-results.json").unlink(missing_ok=True)
     env = dict(os.environ, PLAYWRIGHT_USE_PREBUILT_WEB="1", SIMULATOR_PATH=str(Path(sim_dir) / "simulator"))
-    log(f"wallet {sha[:9]}: playwright {' '.join(tests)}")
+    log(f"wallet {sha[:9]}: playwright {' '.join(tests) or '(all tests)'}")
+    deps = [a for d in TEST_PYTHON_DEPS for a in ("--with", d)]
     with open(out / "playwright.log", "w") as f:
-        subprocess.run(["npx", "playwright", "test", "-c", "playwright.evidence.config.ts", *tests],
-                       cwd=web, env=env, stdout=f, stderr=subprocess.STDOUT, timeout=1800)
+        subprocess.run(["uv", "run", "-q", "--no-project", *deps, "--", "npx", "playwright", "test", "-c",
+                        "playwright.evidence.config.ts", *tests],
+                       cwd=web, env=env, stdout=f, stderr=subprocess.STDOUT, timeout=3600)
     if not (web / "e2e-results.json").exists():
         tail = (out / "playwright.log").read_text().splitlines()[-20:]
         raise RuntimeError(f"playwright produced no results for {ref}:\n" + "\n".join(tail))
@@ -89,20 +95,40 @@ def run_wallet(ref, sim_dir, tests, out):
 
 
 def cmd_wallet_compare(args):
+    return compare(args.base, args.head, args.firmware, args.tests, Path(args.out))
+
+
+def compare(base, head, firmware, tests, out):
     bundle.use_node()
-    out = Path(args.out)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
-    res = subprocess.run([str(E2E_DIR / "build-sim.sh"), args.firmware], stdout=subprocess.PIPE, text=True, check=True)
-    sim_dir = res.stdout.strip().splitlines()[-1]
-    for side, ref in (("base", args.base), ("head", args.head)):
+    sim_dir = bundle.build_sim(firmware)
+    for side, ref in (("base", base), ("head", head)):
         (out / side).mkdir()
-        run_wallet(ref, sim_dir, args.tests, out / side)
+        run_wallet(ref, sim_dir, tests, out / side)
     regressions = wallet_report(out)
     for r in regressions:
         log(f"regression: {r}")
     return 1 if regressions else 0
+
+
+def cmd_app_change(args, firmware=None):
+    """`e2e.py pr --repo app`: the tests (all, or --tests) at the merge-base and at head, on the
+    pinned firmware or upstream master; with --wc also the WalletConnect flow, in <out>/wc."""
+    head = bundle.resolve(args.head, "app")
+    base = bundle.git("merge-base", bundle.resolve(args.base, "app"), head, cwd=WALLET_REPO)
+    firmware = firmware or bundle.resolve(bundle.default_firmware_ref())
+    out = Path(args.out)
+    rc = compare(base, head, firmware, args.tests, out)
+    if args.wc:
+        from wc import flow
+        wc_rc = flow.cmd_wc(argparse.Namespace(base=base, head=head, firmware=firmware, out=str(out / "wc")))
+        with open(out / "report.md", "a") as f:
+            f.write(f"\n## WalletConnect flow\n\n{'**Failed**' if wc_rc else 'Passed'} on "
+                    f"{'one side or both' if wc_rc else 'both sides'}: [wc/report.html](wc/report.html)\n")
+        rc = max(rc, wc_rc)
+    return rc
 
 
 def wallet_report(out):

@@ -3,9 +3,10 @@
 # requires-python = ">=3.10"
 # dependencies = ["pillow>=10", "python-xlib>=0.33"]
 # ///
-"""Rabby extension -> BitBoxBridge (fake) -> graphical simulator: firmware base vs head.
+"""Rabby extension -> BitBoxBridge (fake) -> graphical simulator: firmware or Rabby base vs head.
 
   e2e.py rabby --base <fw-ref> --head <fw-ref> --out <dir> [--rabby-ref v0.94.15]
+  e2e.py pr --repo rabby [--base <rabby-ref>] --head <rabby-ref> --out <dir> [--pin firmware=<ref>]
   rabby/rabby_e2e.py repeat --firmware <fw-ref> -n 3 --out <dir>    same flow N times, frame identity
   rabby/rabby_e2e.py record --firmware <fw-ref> --out <dir>         re-record fixtures/rabby-api.json.gz
   rabby/rabby_e2e.py report <dir>
@@ -34,7 +35,7 @@ from bundle import build_sim  # noqa: E402
 from rabby.run import SETUP_STEPS  # noqa: E402
 from report import fmt_ok, frame_rows, md_to_html  # noqa: E402
 
-RABBY_REPO = Path(os.environ.get("BITBOX_RABBY", bundle.WORKSPACE / "Rabby"))
+RABBY_REPO = bundle.REPOS["rabby"].dir
 DEFAULT_REF = "v0.94.15"
 
 
@@ -144,19 +145,32 @@ def cmd_record(args):
 
 
 def cmd_rabby(args):
+    """Firmware base vs head through one Rabby build."""
+    return compare({"base": (args.base, args.rabby_ref), "head": (args.head, args.rabby_ref)}, Path(args.out))
+
+
+def cmd_rabby_change(args, firmware=None):
+    """`e2e.py pr --repo rabby`: Rabby at the merge-base vs head, on the pinned firmware or upstream master."""
+    head = bundle.resolve(args.head, "rabby")
+    base = bundle.git("merge-base", bundle.resolve(args.base, "rabby"), head, cwd=RABBY_REPO)
+    firmware = firmware or bundle.resolve(bundle.default_firmware_ref())
+    return compare({"base": (firmware, base), "head": (firmware, head)}, Path(args.out))
+
+
+def compare(sides, out):
+    """sides: {"base"|"head": (firmware ref, Rabby ref)}. Exits 1 if the flow failed on either."""
     ensure_tools()
-    dist = ensure_rabby(args.rabby_ref)
-    sims = {side: build_sim(ref) for side, ref in (("base", args.base), ("head", args.head))}
-    out = Path(args.out)
+    dists = {side: ensure_rabby(rabby) for side, (_, rabby) in sides.items()}
+    sims = {side: build_sim(fw) for side, (fw, _) in sides.items()}
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
     failed = []
     for side in ("base", "head"):
-        if not run_flow(sims[side], dist, out / side):
+        if not run_flow(sims[side], dists[side], out / side):
             failed.append(side)
         m = json.loads((out / side / "meta.json").read_text()) if (out / side / "meta.json").exists() else {}
-        m["label"] = f"{side}: {getattr(args, side)}"
-        m["rabby_ref"] = args.rabby_ref
+        m["label"] = f"{side}: {sides[side][0]}"
+        m["rabby_ref"] = sides[side][1]
         (out / side).mkdir(exist_ok=True)
         (out / side / "meta.json").write_text(json.dumps(m, indent=2))
     report(out)
@@ -228,7 +242,8 @@ def report(out):
     diffdir = out / "diff"
     diffdir.mkdir(exist_ok=True)
     steps = list(dict.fromkeys(h["order"] + b["order"]))
-    md = ["# BitBox e2e: Rabby extension, firmware base vs head", "",
+    changed = "Rabby" if b["meta"].get("rabby_ref") != h["meta"].get("rabby_ref") else "firmware"
+    md = [f"# BitBox e2e: Rabby extension, {changed} base vs head", "",
           "Unmodified Rabby talks to the graphical simulator through a fake BitBoxBridge "
           "(bridge/sim_bridge.py); Rabby's backend is replayed from rabby/fixtures, chains are local anvils.", "",
           "| | base | head |", "|---|---|---|"]

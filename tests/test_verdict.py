@@ -96,3 +96,11 @@ def test_mode_missing_on_base_does_not_gate():
     head = {"simulator": "v", "suites": {"api-rs": {"committed": suite(passing=["a"]),
                                                     "firmware": suite(passing=["a"], failing=["b"])}}}
     assert e2e.verdict({}, base, head) == []
+
+
+def test_committed_vector_failures_gate_an_api_change_but_not_a_firmware_change():
+    base = {"simulator": "v", "suites": {"api-go": {"committed": suite(passing=["t"])}}}
+    head = {"simulator": "v", "suites": {"api-go": {"committed": suite(failing=["t"])}}}
+    assert e2e.verdict({}, base, head) == []
+    reasons = e2e.verdict({}, base, head, ("committed", "firmware"))
+    assert len(reasons) == 1 and reasons[0].startswith("api-go (committed vectors)")

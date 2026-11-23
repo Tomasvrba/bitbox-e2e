@@ -6,7 +6,8 @@
 """BitBox simulator e2e: run scenarios against base/head firmware and report the device diff.
 
   e2e.py baseline <ref> [--graphical <glob>...] [-j N]       record the bundle for a firmware commit
-  e2e.py pr --base <ref> --head <ref|WORKTREE> --out <dir> [--graphical <glob>...] [-j N]
+  e2e.py pr [--repo firmware|app|api-rs|api-go|api-ts|rabby] [--base <ref>] --head <ref> --out <dir>
+            [--pin <repo>=<ref>...] [--graphical <glob>...] [--tests <file>...] [--wc] [-j N]
   e2e.py promote <pr-out-dir> <unit-id>...                    head screens become expectations
   e2e.py device  --scenario scenarios/x.json --sim-dir <dir> --out <dir>   one scenario, one simulator
   e2e.py wallet-compare --base <app-ref> --head <app-ref> --firmware <ref> --out <dir> <test>...
@@ -36,7 +37,7 @@ import expect  # noqa: E402
 from bundle import build_sim, log, read_text, sim_version  # noqa: E402
 from report import SETUP_STEPS, frames_md, md_to_html, results, screen_lines  # noqa: E402
 import wallet_app  # noqa: E402
-from runs import cmd_device, ensure_driver  # noqa: E402
+from runs import cmd_device, driver_for, ensure_driver  # noqa: E402
 
 
 # --- baseline / pr --------------------------------------------------------------------------------
@@ -66,11 +67,13 @@ class Timer:
         log(f"phase {name}: {self.phases[name]}s")
 
 
-def ensure_baseline(sha, jobs, timer=None, force=False):
+def ensure_baseline(sha, jobs, timer=None, force=False, revs=None):
     """Bundle for a firmware commit: created on first use (every unit headless + lane B), reused
     after. Returns (root, manifest, units). The simulator is built only to record: a bundle restored
-    from a CI cache must not cost a simulator build."""
-    root = bundle.bundle_dir(sha)
+    from a CI cache must not cost a simulator build. revs pins the API repos ({"api-rs": sha}): the
+    suites run at those commits, and the driver links api-rs at its pin."""
+    revs = revs or {}
+    root = bundle.bundle_dir(sha, revs)
     fw_dir = bundle.firmware_dir(sha)
     units = bundle.load_units(fw_dir)
     m = None if force else bundle.read_manifest(root)
@@ -84,15 +87,15 @@ def ensure_baseline(sha, jobs, timer=None, force=False):
         shutil.rmtree(root / d, ignore_errors=True)
     root.mkdir(parents=True, exist_ok=True)
     m = {"sha": sha, "simulator_version": sim_version(sim_dir), "harness_sha": bundle.harness_sha(),
-         "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "units": {}}
-    ok = bundle.run_units(sim_dir, units, root, "headless", jobs)
+         "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "pins": revs, "units": {}}
+    ok = bundle.run_units(sim_dir, units, root, "headless", jobs, driver_for(revs.get("api-rs")))
     if not any(ok.values()):
         # Every head unit would compare against "failed on base", so the gate could never fire.
         raise RuntimeError(f"no unit completed on {sha[:9]}; not recording the baseline "
                            f"(logs: {root}/units/*/headless.log)")
     m["units"] = {i: {"headless_ok": v, "graphical_ok": None} for i, v in ok.items()}
     timer and timer.done("baseline headless")
-    m["revisions"] = revisions(apis.run(sim_dir, fw_dir / bundle.FW_VECTORS, root / "apis"))
+    m["revisions"] = revisions(apis.run(sim_dir, fw_dir / bundle.FW_VECTORS, root / "apis", revs=revs), revs)
     timer and timer.done("baseline apis")
     # The manifest marks the bundle complete, so a recording that died halfway is redone next time.
     bundle.write_manifest(root, m)
@@ -106,32 +109,35 @@ def baseline_graphical(root, m, sha, units, ids, jobs):
     if not todo:
         return None
     sim_dir = build_sim(sha)
-    for i, v in bundle.run_units(sim_dir, todo, root, "graphical", jobs).items():
+    driver = driver_for((m.get("pins") or {}).get("api-rs"))
+    for i, v in bundle.run_units(sim_dir, todo, root, "graphical", jobs, driver).items():
         m["units"][i]["graphical_ok"] = v
     bundle.write_manifest(root, m)
     return bundle.graphical_mode(sim_dir)
 
 
-def revisions(api_results):
-    """Code under test besides the firmware: the bitbox-api-rs tree the driver links (driver/Cargo.toml
-    path dependency; with E2E_DRIVER it is whatever that binary was built from) and the API repo
-    revisions the suites ran. Base and head can differ, e.g. a bundle recorded weeks ago."""
-    revs = {"driver bitbox-api-rs": bundle.checkout_rev(E2E_DIR.parent / "bitbox-api-rs")}
+def revisions(api_results, pins=None):
+    """Code under test besides the firmware: the bitbox-api-rs the driver links (its pin, else the
+    sibling tree of the driver/Cargo.toml path dependency; with E2E_DRIVER whatever that binary was
+    built from) and the API repo revisions the suites ran. Base and head can differ, e.g. a bundle
+    recorded weeks ago."""
+    revs = {"driver bitbox-api-rs": (pins or {}).get("api-rs") or bundle.checkout_rev(bundle.REPOS["api-rs"].dir)}
     for suite, modes in api_results["suites"].items():
         revs[suite] = next((r["repo_sha"] for r in modes.values() if r.get("repo_sha")), None)
     return revs
 
 
-def revision_diffs(base, head):
-    """Keys of revisions() known on both sides that differ."""
-    return [k for k, v in head.items() if v and base.get(k) and base[k] != v]
+def revision_diffs(base, head, changed=None):
+    """Keys of revisions() known on both sides that differ, other than the changed repo's own."""
+    own = {changed, f"driver bitbox-{changed}"} if changed else set()
+    return [k for k, v in head.items() if v and base.get(k) and base[k] != v and k not in own]
 
 
 def cmd_baseline(args):
     ensure_driver()
     timer = Timer()
     sha = bundle.resolve(args.ref)
-    root, m, units = ensure_baseline(sha, args.jobs, timer, force=args.force)
+    root, m, units = ensure_baseline(sha, args.jobs, timer, force=args.force, revs=api_pins(parse_pins(args.pin, "firmware")))
     baseline_graphical(root, m, sha, units, matching(units, args.graphical), args.jobs)
     timer.done("baseline graphical")
     ok = sum(bool(u["headless_ok"]) for u in m["units"].values())
@@ -160,19 +166,23 @@ def unreached_note(unreached, unmapped):
             "coverage map**, no unit known to reach them: " + ", ".join(f"`{f}`" for f in unmapped))
 
 
-def verdict(units, base_apis, head_apis):
+def verdict(units, base_apis, head_apis, modes=("firmware",)):
     """Why the PR fails the gate, empty if it passes. Takes pr.json's units, base_apis and apis.
     Only regressions against the merge-base count: changed screens and expectation mismatches are
-    evidence for the reviewer, expectations get promoted after the firmware PR merges."""
+    evidence for the reviewer, expectations get promoted after the firmware PR merges.
+
+    modes: the API vector modes that gate. For a firmware change only the run with head's own
+    vectors: the API repos' committed copies assert the screens of the firmware they were synced
+    from, so they fail on any PR that changes one (drift). For an API change both: the firmware is
+    the same on both sides, so any newly failing test is the change's."""
     reasons = [f"{uid}: completed on base, fails on head" + (f" ({u['head_error']})" if u.get("head_error") else "")
                for uid, u in sorted(units.items()) if u["base_ok"] and not u["head_ok"]]
-    # Only the run with head's own vectors gates. The API repos' committed copies assert the screens
-    # of the firmware they were synced from, so they fail on any PR that changes one (drift).
-    for suite, modes in head_apis["suites"].items():
-        if err := modes.get("firmware", {}).get("error"):
-            reasons.append(f"{suite} (firmware vectors): suite error on head: {err}")
-    reasons += [f"{suite} (firmware vectors): newly failing on head: " + ", ".join(tests)
-                for suite, tests in api_newly_failing(base_apis, head_apis, "firmware").items()]
+    for mode in modes:
+        for suite, by_mode in head_apis["suites"].items():
+            if err := by_mode.get(mode, {}).get("error"):
+                reasons.append(f"{suite} ({mode} vectors): suite error on head: {err}")
+        reasons += [f"{suite} ({mode} vectors): newly failing on head: " + ", ".join(tests)
+                    for suite, tests in api_newly_failing(base_apis, head_apis, mode).items()]
     return reasons
 
 
@@ -226,30 +236,73 @@ def promote_path(p):
     return full
 
 
+# Repos that --pin can fix for both sides; the app and Rabby are only ever the change under test.
+PIN_REPOS = ("firmware", "api-rs", "api-go", "api-ts")
+
+
+def parse_pins(pins, changed=None):
+    """--pin name=ref ... -> {name: sha}."""
+    out = {}
+    for p in pins or ():
+        name, sep, ref = p.partition("=")
+        if not sep or name not in PIN_REPOS or not ref:
+            sys.exit(f"--pin {p}: expected <{'|'.join(PIN_REPOS)}>=<ref>")
+        if name == changed:
+            sys.exit(f"--pin {p}: {name} is the repo under test, its refs are --base and --head")
+        out[name] = bundle.resolve(ref, name)
+    return out
+
+
+def api_pins(pins):
+    return {k: v for k, v in pins.items() if k != "firmware"}
+
+
 def cmd_pr(args):
-    ensure_driver()
+    """One change, base vs head, in the repo given by --repo; the other repos at their pins."""
+    args.base = args.base or bundle.default_ref(args.repo)
+    pins = parse_pins(args.pin, args.repo)
+    if args.repo in ("app", "rabby") and set(pins) - {"firmware"}:
+        sys.exit(f"--pin: only the firmware is used in a {args.repo} change")
+    if args.repo == "app":
+        return wallet_app.cmd_app_change(args, pins.get("firmware"))
+    if args.repo == "rabby":
+        from rabby import rabby_e2e
+        return rabby_e2e.cmd_rabby_change(args, pins.get("firmware"))
+    return cmd_device_change(args, pins)
+
+
+def cmd_device_change(args, pins):
+    """A firmware or API change: every unit and the API suites, head against the merge-base."""
     timer = Timer()
     out = Path(args.out)
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
-    head_sha = bundle.resolve(args.head)
-    base_sha = bundle.git("merge-base", bundle.resolve(args.base), head_sha)
-    root, m, base_units = ensure_baseline(base_sha, args.jobs, timer)
+    repo = args.repo
+    head_sha = bundle.resolve(args.head, repo)
+    base_sha = bundle.git("merge-base", bundle.resolve(args.base, repo), head_sha, cwd=bundle.REPOS[repo].dir)
+    revs = api_pins(pins)
+    if repo == "firmware":
+        fw_base, fw_head, base_revs, head_revs = base_sha, args.head, revs, revs
+    else:
+        fw_base = fw_head = pins.get("firmware") or bundle.resolve(bundle.default_firmware_ref())
+        base_revs, head_revs = revs | {repo: base_sha}, revs | {repo: head_sha}
+    root, m, base_units = ensure_baseline(fw_base, args.jobs, timer, revs=base_revs)
     timer.done("baseline")
 
-    head_sim = build_sim(args.head)
-    head_fw = bundle.firmware_dir(args.head)
+    head_sim = build_sim(fw_head)
+    head_fw = bundle.firmware_dir(fw_head)
     head_units = bundle.load_units(head_fw)
     by_id = {u["id"]: u for u in head_units}
+    head_driver = driver_for(head_revs.get("api-rs"))
     timer.done("head build")
 
     # Every unit runs headless: lane B checks all of them, and coverage cannot see C, protos or
     # token lists. Coverage only reports changed code no unit reaches. It does not pick graphical
     # runs either: a wide diff selects every unit (88 of 88 for one release), ~25 min of frames for
     # screens whose text did not change.
-    cov = select_units(base_sha, args.head)
+    cov = select_units(base_sha, args.head) if repo == "firmware" else None
     picked = matching(head_units, args.graphical)
-    head_ok = bundle.run_units(head_sim, head_units, out / "head", "headless", args.jobs)
+    head_ok = bundle.run_units(head_sim, head_units, out / "head", "headless", args.jobs, head_driver)
     timer.done("head headless")
 
     def unit_dirs(uid):
@@ -271,8 +324,8 @@ def cmd_pr(args):
     changed = {i for ids in groups.values() for i in ids}
     new = set(by_id) - set(m["units"])
     graphical = (changed - set(same_as)) | new | picked
-    base_mode = baseline_graphical(root, m, base_sha, base_units, graphical, args.jobs)
-    bundle.run_units(head_sim, [by_id[i] for i in sorted(graphical)], out / "head", "graphical", args.jobs)
+    base_mode = baseline_graphical(root, m, fw_base, base_units, graphical, args.jobs)
+    bundle.run_units(head_sim, [by_id[i] for i in sorted(graphical)], out / "head", "graphical", args.jobs, head_driver)
     # Frames can differ while the text does not (layout, fonts), but also by capture timing (a toast
     # caught on one side only), so these are reported apart from text changes.
     frames_only = set()
@@ -290,20 +343,22 @@ def cmd_pr(args):
     head_version = sim_version(head_sim)
     expectations = {u["id"]: expect.check(u, load_screens(unit_dirs(u["id"])[1]), head_version)
                     for u in head_units if u.get("expect")}
-    api_results = apis.run(head_sim, head_fw / bundle.FW_VECTORS, out / "apis")
+    api_results = apis.run(head_sim, head_fw / bundle.FW_VECTORS, out / "apis", revs=head_revs)
     timer.done("lane B")
 
     base_apis = json.loads((root / "apis" / "results.json").read_text()) if (root / "apis" / "results.json").exists() else None
     pr = {
-        "base": {"ref": args.base, "sha": base_sha, "bundle": str(root), "simulator_version": m["simulator_version"],
+        "repo": repo,
+        "base": {"ref": args.base, "sha": base_sha, "firmware": fw_base, "bundle": str(root),
+                 "simulator_version": m["simulator_version"],
                  "harness_sha": m.get("harness_sha"),
                  # Bundles recorded before revisions were: the API repos from their results, driver unknown.
                  "revisions": m.get("revisions") or (revisions(base_apis) | {"driver bitbox-api-rs": None}
                                                      if base_apis else {}),
-                 "vectors": bundle.has_vectors(bundle.firmware_dir(base_sha))},
-        "head": {"ref": args.head, "sha": head_sha, "simulator_version": head_version,
+                 "vectors": bundle.has_vectors(bundle.firmware_dir(fw_base))},
+        "head": {"ref": args.head, "sha": head_sha, "firmware": bundle.resolve(fw_head), "simulator_version": head_version,
                  "source": read_text(head_sim / "source.txt"), "harness_sha": bundle.harness_sha(),
-                 "revisions": revisions(api_results), "vectors": bundle.has_vectors(head_fw)},
+                 "revisions": revisions(api_results, head_revs), "vectors": bundle.has_vectors(head_fw)},
         "run_mode": {
             "namespaces": bundle.namespaces(),
             "graphical_head": bundle.graphical_mode(head_sim) if graphical else None,
@@ -327,7 +382,8 @@ def cmd_pr(args):
         "apis": api_results,
         "timings": timer.phases,
     }
-    pr["verdict"] = verdict(pr["units"], pr["base_apis"], pr["apis"])
+    pr["verdict"] = verdict(pr["units"], pr["base_apis"], pr["apis"],
+                            ("firmware",) if repo == "firmware" else ("committed", "firmware"))
     (out / "pr.json").write_text(json.dumps(pr, indent=2))
     pr_report(out)
     timer.done("report")
@@ -372,19 +428,21 @@ def pr_report(out):
     exp = {i: u["expect"] for i, u in units.items() if u["expect"]}
     exp_n = {k: sum(e["status"] == k for e in exp.values()) for k in ("pass", "fail", "no-expectation")}
     base, head = pr["base"], pr["head"]
+    repo = pr.get("repo", "firmware")  # pr.json from before --repo: firmware
 
-    md = [f"# BitBox e2e: `{base['ref']}` -> `{head['ref']}`", "",
+    md = [f"# BitBox e2e: {repo} `{base['ref']}` -> `{head['ref']}`", "",
           "| | base (merge-base) | head |", "|---|---|---|",
-          f"| firmware | `{base['sha'][:9]}` | `{head['ref']}` (`{head['sha'][:9]}`) |",
+          f"| {repo} | `{base['sha'][:9]}` | `{head['ref']}` (`{head['sha'][:9]}`) |",
+          *([f"| firmware | `{base['firmware'][:9]}` | `{head['firmware'][:9]}` |"] if repo != "firmware" else []),
           f"| simulator | {base['simulator_version']} | {head['simulator_version']} |",
           f"| harness | `{short_sha(base['harness_sha'])}` | `{short_sha(head['harness_sha'])}` |"]
     base_revs, head_revs = base.get("revisions") or {}, head.get("revisions") or {}
-    md += [f"| {k} | `{short_sha(base_revs.get(k))}` | `{short_sha(v)}` |" for k, v in head_revs.items()]
+    md += [f"| {k} | `{short_sha(base_revs.get(k))}` | `{short_sha(v)}` |" for k, v in head_revs.items() if k != repo]
     md.append("")
     if base["harness_sha"] != head["harness_sha"]:
         md += ["*The baseline was recorded with another harness revision; harness changes can show up as diffs.*", ""]
-    if diffs := revision_diffs(base_revs, head_revs):
-        md += [f"*Not only the firmware differs: {', '.join(diffs)} ran at another revision on base than on head; "
+    if diffs := revision_diffs(base_revs, head_revs, None if repo == "firmware" else repo):
+        md += [f"*Not only the {repo} differs: {', '.join(diffs)} ran at another revision on base than on head; "
                "their changes can show up as diffs or API test failures (not gating by themselves).*", ""]
     md += ["## Verdict", ""]
     if pr["verdict"]:
@@ -392,7 +450,7 @@ def pr_report(out):
                *[f"- {r}" for r in pr["verdict"]], ""]
     else:
         md += ["**No regressions**: every unit and API test that passed on the merge-base passes on head.", ""]
-    drift = api_newly_failing(pr["base_apis"], pr["apis"], "committed")
+    drift = api_newly_failing(pr["base_apis"], pr["apis"], "committed") if repo == "firmware" else {}
     md += [f"Not gating, for review: {len(by['changed'])} changed and {len(by['new'])} new unit(s), "
            f"{exp_n['fail']} expectation mismatch(es) (promote after the firmware PR merges)"
            + (f", {sum(map(len, drift.values()))} API test(s) newly failing with the API repos' committed "
@@ -405,8 +463,9 @@ def pr_report(out):
            + (f", {len(pr['removed'])} removed" if pr["removed"] else ""),
            f"- **Expectations** (not gating): {exp_n['pass']} pass, {exp_n['fail']} fail, {exp_n['no-expectation']} without "
            f"expectation for this version, {len(units) - len(exp)} units without expectations",
-           "- **Unreached changed functions**: " + unreached_note(pr["unreached"], pr.get("unmapped")),
-           *[f"- **No BTC vectors file at {side}** (`{pr[side]['sha'][:9]}`, before firmware 3bdaf583b): btc-vector "
+           "- **Unreached changed functions**: " + (unreached_note(pr["unreached"], pr.get("unmapped"))
+                                                     if repo == "firmware" else "n/a (coverage maps firmware code only)"),
+           *[f"- **No BTC vectors file at {side}** (`{pr[side].get('firmware', pr[side]['sha'])[:9]}`, before firmware 3bdaf583b): btc-vector "
              "units unavailable there, the API suites ran with their committed vectors only"
              for side in ("base", "head") if pr[side].get("vectors") is False],
            "- **Run mode**: " + run_mode_note(pr.get("run_mode")),
@@ -511,9 +570,17 @@ def main():
             b.add_argument("ref", help="firmware commit")
             b.add_argument("--force", action="store_true", help="re-record an existing bundle")
         else:
-            b.add_argument("--base", required=True, help="firmware ref; its merge-base with head keys the bundle")
-            b.add_argument("--head", required=True, help="firmware ref or WORKTREE")
+            b.add_argument("--repo", choices=bundle.REPOS, default="firmware", help="the repo the change is in")
+            b.add_argument("--base", help="ref in that repo; the run compares head against its merge-base "
+                           "with head (default: the upstream default branch)")
+            b.add_argument("--head", required=True, help="ref in that repo, or WORKTREE (firmware only)")
             b.add_argument("--out", required=True)
+            b.add_argument("--tests", nargs="+", default=[], metavar="FILE",
+                           help="app change: Playwright test files to run, relative to frontends/web (default: all)")
+            b.add_argument("--wc", action="store_true", help="app change: also the WalletConnect flow")
+        b.add_argument("--pin", action="append", default=[], metavar="REPO=REF",
+                       help=f"run another repo at this ref on both sides ({', '.join(PIN_REPOS)}); "
+                       "default: the sibling checkout's HEAD for the API repos, upstream master for the firmware")
         b.add_argument("--graphical", nargs="+", action="extend", default=[], metavar="GLOB",
                        help="unit id globs to also run on the graphical simulator")
         b.add_argument("-j", "--jobs", type=int, default=bundle.JOBS,
