@@ -11,7 +11,9 @@
 //   -> {"event":"result","step":..,"ok":true,"result":..,"check":{..}} | {"ok":false,"error":{..}}
 //   -> {"event":"done"}                            after the last request, or on "quit"
 //
-// `check` is the dapp-side verification: recovered signer vs session address.
+// `check` is the dapp-side verification: recovered signer vs session address. For a sent
+// transaction, with WC_CHAIN_RPC ({"<chain id>": "<rpc url>"}, the local chains of wallet/chains.py),
+// also whether the transaction is on that chain and from the session address.
 //
 //   node dapp.mjs [--list]        --list prints the request steps and exits
 
@@ -72,8 +74,11 @@ const typedData = chainId => ({
 
 const tx = (address, extra = {}) => ({ from: address, to: RECIPIENT, value: '0x0', data: '0x', ...extra });
 
-// The value is 0: the backend estimates gas with the sender's (empty) balance, so a non-zero
-// value fails before the device is asked. A fixed nonce keeps it off the network for signTransaction.
+// Over the app's Etherscan GET limit (6000 characters, then POST) and the proxy's (8147, then 414).
+const LARGE_DATA = '0x' + 'ab'.repeat(4500);
+
+// The value is 0 so the steps also work against the live network with the unfunded simulator seed.
+// A fixed nonce keeps signTransaction off the network.
 export const REQUESTS = [
   {
     step: 'personal-sign-sepolia',
@@ -101,7 +106,19 @@ export const REQUESTS = [
     params: a => [tx(a, { nonce: '0x0' })],
   },
   {
-    // Cross-chain sends are signed on the device, then broadcast fails (unfunded simulator seed).
+    step: 'send-tx-sepolia',
+    chainId: 'eip155:11155111',
+    method: 'eth_sendTransaction',
+    params: a => [tx(a)],
+  },
+  {
+    // bitbox-wallet-app#4579: large requests went out as POST without the chain in the URL.
+    step: 'send-tx-sepolia-large',
+    chainId: 'eip155:11155111',
+    method: 'eth_sendTransaction',
+    params: a => [tx(a, { data: LARGE_DATA })],
+  },
+  {
     step: 'send-tx-arbitrum',
     chainId: 'eip155:42161',
     method: 'eth_sendTransaction',
@@ -114,6 +131,29 @@ export const REQUESTS = [
     params: a => [tx(a)],
   },
 ];
+
+const RPC = JSON.parse(process.env.WC_CHAIN_RPC || '{}');
+
+// Whether a hash the app returned for eth_sendTransaction is a transaction on the chain, from the
+// session address. Only with local chains: the app can answer with a hash it never broadcast.
+async function onChain(req, address, hash) {
+  const url = RPC[req.chainId.split(':')[1]];
+  if (!url) {
+    return {};
+  }
+  for (let i = 0; i < 20; i++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionByHash', params: [hash] }),
+    }).then(r => r.json());
+    if (res.result) {
+      return { onChain: true, signerMatches: res.result.from.toLowerCase() === address.toLowerCase(), signer: res.result.from };
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  return { onChain: false };
+}
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n');
@@ -137,7 +177,7 @@ async function check(req, address, params, result) {
       nonce: parsed.nonce,
     };
   } else {
-    return { txHash: result };
+    return { txHash: result, ...await onChain(req, address, result) };
   }
   return { signerMatches: lower(signer) === lower(address), signer };
 }

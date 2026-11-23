@@ -195,10 +195,11 @@ def wallet_report(out):
     wc = out / "wc.json"
     if wc.exists():
         if json.loads(wc.read_text())["rc"]:
-            f["broke"].append({"title": "The WalletConnect flow failed",
-                               "detail": "It failed before or after this PR. Its own report: wc/report.html."})
+            f["broke"].append({"title": "The WalletConnect flow found a regression",
+                               "detail": "A request that worked before this PR fails with it. Its own report: "
+                                         "wc/report.html."})
         else:
-            f["tested"].append("The WalletConnect flow, before and after: passed. Its own report: wc/report.html.")
+            f["tested"].append("The WalletConnect flow, before and after: nothing broke. Its own report: wc/report.html.")
     f["details"] = [("app", meta["base"]["source"], meta["head"]["source"]),
                     ("simulator", meta["base"]["simulator"][:9], meta["head"]["simulator"][:9]),
                     *((f"`{t}`", tb.get(t, {}).get("status", "-"), th.get(t, {}).get("status", "-"))

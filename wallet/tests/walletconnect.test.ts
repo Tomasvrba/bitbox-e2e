@@ -5,7 +5,8 @@
 // requests. The app approves them and the graphical simulator (wc/device.py) confirms on device.
 // Evidence goes to $WC_OUT: app/*.png + app/steps.json, device/*.png + device/frames.json.
 //
-// Env: WC_OUT, WC_DAPP (dapp.mjs), WC_DEVICE (device.py), SIMULATOR_DIR (has simulator-graphical).
+// Env: WC_OUT, WC_DAPP (dapp.mjs), WC_DEVICE (device.py), SIMULATOR_DIR (has simulator-graphical),
+// WC_APP_CONFIG (optional: the app's config.json, e.g. its proxy setting for local chains).
 
 import { expect, type Page } from '@playwright/test';
 import { spawn, type ChildProcess } from 'child_process';
@@ -163,6 +164,12 @@ test('WalletConnect: dapp requests confirmed on the device', async ({ page, host
   await test.step('Start device and app', async () => {
     deleteAccountsFile();
     deleteConfigFile();
+    // The app's proxy setting, pointing at the local chains (wallet/chains.py).
+    if (process.env.WC_APP_CONFIG) {
+      const appFolder = path.join(process.cwd(), '../../appfolder.dev');
+      fs.mkdirSync(appFolder, { recursive: true });
+      fs.copyFileSync(process.env.WC_APP_CONFIG, path.join(appFolder, 'config.json'));
+    }
     device = new LineProc('device', env('WC_DEVICE'), [
       '--sim-dir', env('SIMULATOR_DIR'), '--out', path.join(out, 'device'),
     ], path.join(out, 'device.log'));

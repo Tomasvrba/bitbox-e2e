@@ -32,6 +32,7 @@ sys.path.insert(0, str(E2E_DIR))
 
 import bundle  # noqa: E402
 import report as report_mod  # noqa: E402
+from wallet import chains  # noqa: E402
 import wallet_app  # noqa: E402
 from bundle import build_sim, log, read_text  # noqa: E402
 from report import frame_rows, images_equal, strip_ansi  # noqa: E402
@@ -70,11 +71,15 @@ def run_side(ref, sim_dir, out):
     shutil.rmtree(web / "test-results", ignore_errors=True)
     (web / "e2e-results.json").unlink(missing_ok=True)
     out.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, PLAYWRIGHT_USE_PREBUILT_WEB="1", WC_OUT=str(out),
-               WC_DAPP=str(WC_DIR / "dapp.mjs"), WC_DEVICE=str(WC_DIR / "device.py"), SIMULATOR_DIR=str(sim_dir))
     log(f"wc {sha[:9]}: playwright {TEST}")
     try:
-        with open(out / "playwright.log", "w") as f:
+        with chains.local_chains(out / "chains") as c, open(out / "playwright.log", "w") as f:
+            (out / "app-config.json").write_text(json.dumps(chains.app_config(c["socks"])))
+            # SSL_CERT_FILE: the app backend (Go) trusts the local Etherscan proxy's certificate.
+            env = dict(os.environ, PLAYWRIGHT_USE_PREBUILT_WEB="1", WC_OUT=str(out), WC_DAPP=str(WC_DIR / "dapp.mjs"),
+                       WC_DEVICE=str(WC_DIR / "device.py"), SIMULATOR_DIR=str(sim_dir),
+                       WC_APP_CONFIG=str(out / "app-config.json"), SSL_CERT_FILE=c["ca_file"],
+                       WC_CHAIN_RPC=json.dumps({str(k): v for k, v in c["rpc"].items()}))
             res = subprocess.run(["npx", "playwright", "test", "-c", "playwright.evidence.config.ts", f"tests/{TEST}"],
                                  cwd=web, env=env, stdout=f, stderr=subprocess.STDOUT, timeout=1800)
     finally:
@@ -115,19 +120,14 @@ def cmd_wc(args):
     out.mkdir(parents=True)
     ensure_dapp()
     sim_dir = build_sim(args.firmware or bundle.default_firmware_ref())
-    failed = []
     for side, ref in (("base", args.base), ("head", args.head)):
-        meta = run_side(ref, sim_dir, out / side)
-        # The test tolerates requests the app or dapp rejects (they show in the report as errors);
-        # a signature from the wrong account is a failure the test does not check.
-        steps, _ = load_side(out / side)
-        bad = [r["step"] for r in steps if ((r.get("dapp") or {}).get("check") or {}).get("signerMatches") is False]
-        if not meta["passed"] or bad:
-            failed.append(f"{side} ({'signer mismatch in ' + ', '.join(bad) if bad else 'playwright failed'})")
-    report(out)
-    if failed:
-        log(f"wc flow failed: {'; '.join(failed)}")
-    return 1 if failed else 0
+        run_side(ref, sim_dir, out / side)
+    # Like the other flows: exit 1 only for what got worse from base to head. The test itself
+    # tolerates rejected requests; the report compares what the dapp got per request.
+    broke = report(out)["broke"]
+    for b in broke:
+        log(f"regression: {b['title']}")
+    return 1 if broke else 0
 
 
 # --- report ---------------------------------------------------------------------------------------
@@ -139,6 +139,8 @@ def load_side(d):
 
 
 TX_METHODS = {"eth_sendTransaction", "eth_signTransaction"}
+CHAIN_NAMES = {"1": "Ethereum", "11155111": "Sepolia", "42161": "Arbitrum One", "137": "Polygon", "10": "OP Mainnet",
+               "8453": "Base", "56": "BNB Chain"}
 
 
 def dapp_text(rec):
@@ -150,8 +152,11 @@ def dapp_text(rec):
         return f"session with {len(ev.get('chains') or [])} chains, {len(ev.get('methods') or [])} methods"
     if ev.get("ok"):
         chk = ev.get("check") or {}
+        if chk.get("onChain") is False:
+            return "the app answered with a transaction hash, but the transaction is not on the chain"
         if "signerMatches" in chk:
-            return "signed by the right account" if chk["signerMatches"] else "signed by the WRONG account"
+            verb = "sent from" if chk.get("onChain") else "signed by"
+            return f"{verb} the right account" if chk["signerMatches"] else f"{verb} the WRONG account"
         return "ok, " + str(ev.get("result"))[:20]
     err = ev.get("error") or {}
     return f"error {err.get('code', '')} {err.get('message', '')}".strip().rstrip(".")[:160]
@@ -159,7 +164,22 @@ def dapp_text(rec):
 
 def dapp_ok(rec):
     ev = (rec or {}).get("dapp") or {}
-    return bool(ev.get("event") == "session" or (ev.get("ok") and (ev.get("check") or {}).get("signerMatches") is not False))
+    chk = ev.get("check") or {}
+    return bool(ev.get("event") == "session"
+                or (ev.get("ok") and chk.get("signerMatches") is not False and chk.get("onChain") is not False))
+
+
+def proxy_errors(side_dir, chain=None):
+    """The app's requests to the local Etherscan proxy that failed (on one chain id, or all), once
+    per kind, in words."""
+    p = side_dir / "chains" / "etherscan.jsonl"
+    seen = {}
+    for e in (json.loads(line) for line in p.read_text().splitlines()) if p.exists() else ():
+        if e.get("error") and chain in (None, e.get("chain")):
+            where = {"url": "chain in the URL", "body": "chain only in the body", None: "no chain"}[e.get("chain_in")]
+            key = f"{e['method']} {e.get('action')} ({where}): {e['error'].split(', please see')[0][:120]}"
+            seen[key] = seen.get(key, 0) + 1
+    return [f"{k}" + (f" ({n} times)" if n > 1 else "") for k, n in seen.items()]
 
 
 def step_frames(frames, step):
@@ -179,7 +199,7 @@ def report(out):
     f = {"repo": bundle.REPOS["app"].slug, "pr": pr_info, "intent": report_mod.intent(pr_info),
          "title": (pr_info or {}).get("title") or f"WalletConnect flow: {meta['head']['source']}",
          "sides": {"base": f"`{meta['base']['source']}`", "head": f"`{meta['head']['source']}`"},
-         "broke": [], "changes": [], "minor": [], "known": []}
+         "broke": [], "fixed": [], "changes": [], "minor": [], "known": []}
 
     def rows(name):
         b, h = rb.get(name, {}), rh.get(name, {})
@@ -196,20 +216,29 @@ def report(out):
                                                   out / "head/device", diffdir), out, "base/device", "head/device")
         return dev, out_rows, app_changed
 
+    local = (out / "head" / "chains" / "etherscan.jsonl").exists()
     tested = []
     for name in names:
         b, h = rb.get(name), rh.get(name)
         rec = h or b
-        what = f"`{rec['method']}` on chain {rec.get('chainId', '?')}" if rec.get("method") else f"`{name}`"
+        chain_id = (rec.get("chainId") or "?").split(":")[-1]
+        what = (f"`{rec['method']}` on {CHAIN_NAMES.get(chain_id, f'chain {chain_id}')} (`{name}`)"
+                if rec.get("method") else f"`{name}`")
         tested.append(f"{what}: before {dapp_text(b) if b else 'not run'}; after {dapp_text(h) if h else 'not run'}.")
         dev, app_rows, app_changed = rows(name)
         if dapp_ok(b) and not dapp_ok(h):
+            chain = (rec.get("chainId") or "").split(":")[-1]
+            errors = [e for e in proxy_errors(out / "head", chain) if e not in proxy_errors(out / "base", chain)]
             f["broke"].append({"title": f"WalletConnect request {what} fails",
-                               "detail": f"Before this PR the dapp got: {dapp_text(b)}. With it: {dapp_text(h)}.",
+                               "detail": f"Before this PR the dapp got: {dapp_text(b)}. With it: {dapp_text(h)}."
+                                         + (" Requests of the app to the Etherscan proxy that fail only with this "
+                                            "PR: " + "; ".join(errors) + "." if errors else ""),
                                "compare": dev + app_rows})
+        elif b and h and not dapp_ok(b) and dapp_ok(h):
+            f["fixed"].append(f"WalletConnect request {what}: before this PR {dapp_text(b)}; with it {dapp_text(h)}.")
         elif b and h and not dapp_ok(b) and not dapp_ok(h):
             f["known"].append(f"WalletConnect request {what} fails before and after this PR: {dapp_text(h)}")
-        elif dev and rec.get("method") not in TX_METHODS:
+        elif dev and (local or rec.get("method") not in TX_METHODS):
             f["changes"].append({"title": f"Device screens changed for WalletConnect request {what}", "where": [name],
                                  "expected": report_mod.is_expected([name], globs), "compare": dev + app_rows})
         elif dev or app_changed:
@@ -227,6 +256,8 @@ def report(out):
         "A test dapp pairs with the BitBoxApp over the public WalletConnect relay and sends signing requests. "
         "The app approves each one, and the graphical simulator confirms it on the device "
         f"(firmware `{meta['head']['simulator'][:9]}`).",
+        "The app's Etherscan proxy is a local stand-in in front of local test chains, with the real proxy's "
+        "request rules; the dapp checks that each sent transaction is on the chain." if local else
         "Transactions take their gas price from the live Etherscan proxy, so their fee screens differ on every "
         "run: their differences are listed under pixel-only differences.",
         *tested]
@@ -236,6 +267,7 @@ def report(out):
     page = report_mod.render(out, f)
     log(f"report: {page}")
     print(page)
+    return f
 
 
 # --- determinism ------------------------------------------------------------------------------------

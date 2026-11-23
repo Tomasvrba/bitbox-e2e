@@ -249,19 +249,37 @@ e2e/wc/flow.py run --ref <app-ref> --out <dir>           # one side; flow.py sam
 
 `wc/dapp.mjs` (`@walletconnect/sign-client`) pairs with the app over the public relay and sends
 `personal_sign`, `eth_signTypedData_v4` (Sepolia, mainnet), `eth_signTransaction` (Sepolia) and
-`eth_sendTransaction` (Arbitrum, Polygon), and verifies the signer.
+`eth_sendTransaction` (Sepolia, Sepolia with 4.5 kB of calldata, Arbitrum, Polygon). It verifies the
+signer, and for each sent transaction that it is on the chain and from the session account.
 `wallet/tests/walletconnect.test.ts`, copied into the app clone, approves the session and each
 request in the app; `wc/device.py` runs the graphical simulator (preseeded) and confirms everything
-on the device. The report (the same page as for [`pr`](#the-report)) lists each request whose
-result got worse from base to head under *What broke*, with its device frames and the app
-screenshots that differ. Device changes of transaction steps are listed as pixel-only differences
-(live gas, see below). Exits 1 when either side's flow failed (Playwright test failed, or a
-signature recovered to another account).
+on the device.
 
-- Runs in the host network namespace (relay, Etherscan proxy), so ports 8080/8082/15423 must be
-  free. Not runnable offline or where the relay is blocked.
-- Transaction steps get gas from the live Etherscan proxy: their Total/Fee device screens differ
-  between any two runs. Signing steps and app screenshots are reproducible.
+The app reaches Ethereum through local chains (`wallet/chains.py`): one anvil per chain (1,
+11155111, 42161, 137, 10, 8453, 56) and a stand-in for the app's Etherscan proxy
+(`wallet/etherscan_fake.py`, a mitmproxy addon), behind a SOCKS5 proxy that the app's own proxy
+setting points at (`config.json`, `backend.proxy`); `SSL_CERT_FILE` makes the app trust it. Only
+the Etherscan host is intercepted. The stand-in funds every address the app asks about, answers
+`module=proxy` calls from the chain, keeps a `txlist` of what was sent through it, and returns a
+fixed gas oracle. It enforces the real proxy's request rules (probed with read-only calls,
+2026-11-23):
+
+- The chain must be in the URL query (`chainId`). A POST with the chain only in the body works for
+  chain 1 and fails for any other chain ("Missing or unsupported chainid parameter").
+- A GET whose path and query exceed 8147 characters gets 414.
+
+Those are the rules bitbox-wallet-app#4579 was about: from 1d6ee7f9c every broadcast was a POST
+with the chain only in the body, so sends on Sepolia and the L2s failed. Each side logs the app's
+requests in `<side>/chains/etherscan.jsonl`; the report names the ones that fail only on head.
+
+The report (the same page as for [`pr`](#the-report)) lists each request whose result got worse
+from base to head under *What broke* (an error, a signature from another account, a sent
+transaction that is not on the chain, or the test failing), with the app's proxy requests on that
+chain that fail only on head. Requests that got better are under *Fixed by this PR*. Exits 1 when
+anything is under *What broke*.
+
+- Runs in the host network namespace (relay), so ports 8080/8082/15423, the anvil ports
+  8645-8651 and the SOCKS port 8660 must be free. Not runnable offline or where the relay is blocked.
 - App screenshots hide the banners (testnet, update, attestation, microSD).
 - No BTC: the app only handles `eip155` over WalletConnect.
 

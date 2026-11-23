@@ -97,7 +97,7 @@ def pixel_diff(a_path, b_path, out_path):
 # summary.md (its top, for the CI run page and the PR comment). Keys, all optional but title:
 #
 #   title, repo, pr ({url, number, title, body} or None), sides ({"base": str, "head": str}),
-#   intent (intent(pr)), broke [item], changes [change], known [str], followups [str],
+#   intent (intent(pr)), broke [item], fixed [str], changes [change], known [str], followups [str],
 #   cautions [str], tested [str], untested [str], details [(label, base, head)], notes [str]
 #   item:   {title, detail, excerpt, screens [(base screen, head screen)], compare [row], photo}
 #   change: {title, where [id], expected True|False|None, screens [(base screen, head screen)],
@@ -374,6 +374,10 @@ def render(out, f):
                          f"{pairs(b['screens'])}</details>")
             h.append(compare(b.get("compare"), b.get("photo", False)) + "</article>")
 
+    if f.get("fixed"):
+        h += ["<h2>Fixed by this PR</h2><p class=muted>Each of these failed before this PR and passes with it.</p>",
+              ul(f["fixed"])]
+
     h.append("<h2>What changed on the device</h2>")
     if not f.get("changes"):
         h.append("<p>No device screen is different with this PR.</p>")
@@ -445,6 +449,8 @@ def summary(f):
     lines = [f"### {'❌' if f.get('broke') else '✅'} {top} · {sub}", ""]
     if f.get("broke"):
         lines += ["**What broke**", ""] + [f"- {md(b['title'])}" for b in f["broke"]] + [""]
+    if f.get("fixed"):
+        lines += ["**Fixed by this PR**", ""] + [f"- {md(x)}" for x in f["fixed"]] + [""]
     if f.get("changes"):
         lines += ["**What changed on the device**", ""]
         for c in f["changes"]:
