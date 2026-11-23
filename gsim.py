@@ -188,7 +188,9 @@ class GraphicalSim:
                 time.sleep(0.1)
                 return
             time.sleep(0.3)
-        raise RuntimeError("simulator never finished startup (orientation screen)")
+        shot = Path(self.log.name).with_name("startup-failure.png")
+        self.window_image().save(shot)
+        raise RuntimeError(f"simulator never finished startup (orientation screen), see {shot}")
 
     def wait_stable(self, settle_s=0.4, timeout_s=10.0):
         """Wait until the LCD stops changing (animations, scrolling text) and return its hash."""
