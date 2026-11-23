@@ -35,7 +35,7 @@ Use this procedure to test a pull request (PR) without a local setup.
 5. Keep the other fields empty, or see [Workflow fields](#workflow-fields).
 6. Click **Run workflow**.
 
-A run takes 20 to 60 minutes. When the run is complete:
+A run takes 10 to 35 minutes. When the run is complete:
 
 - The run page shows the top of the report: the verdict and the summary.
 - The **e2e-report** artifact has the full report with the screenshots. Open `report.html`.
