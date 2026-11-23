@@ -1,34 +1,53 @@
-name: firmware change
+name: change
 
-# Manual for now: runs one firmware change against its merge-base and uploads the report.
-# The job is ci/pr.sh; ci/local.sh runs the same script in a container.
+# Manual for now: runs one change in one repo against its merge-base and uploads the report.
+# The job is ci/pr.sh; ci/local.sh runs the same script in a container (firmware changes).
 on:
   workflow_dispatch:
     inputs:
-      base:
-        description: Base, a branch of BitBoxSwiss/bitbox02-firmware or a commit
-        default: master
+      repo:
+        description: Repo the change is in
+        type: choice
+        options: [firmware, app, api-rs, api-go, api-ts, rabby]
+        default: firmware
       head:
         description: Head, a branch or commit
         required: true
       head_repo:
-        description: Fork holding head (owner/repo). Empty when head is in BitBoxSwiss/bitbox02-firmware.
+        description: Fork holding head (owner/repo). Empty when head is in the upstream repo.
         default: ''
+      base:
+        description: Base, a branch or commit of the upstream repo. Empty = its default branch.
+        default: ''
+      pins:
+        description: "Other repos at a fixed version on both sides, e.g. 'firmware=v9.24.0 api-rs=v0.12.0'. Empty = latest."
+        default: ''
+      graphical:
+        description: "Firmware/API change: unit globs to also run on the graphical simulator, e.g. 'btc-vector/*fee*'"
+        default: ''
+      tests:
+        description: "App change: test files to run (e.g. 'tests/watch-only.test.ts'). Empty = all."
+        default: ''
+      walletconnect:
+        description: App change, also run the WalletConnect flow (needs the public relay)
+        type: boolean
+        default: false
 
-# Firmware and API code from the refs above builds and runs here: no secrets, read-only token.
+# Code from the refs above builds and runs here: no secrets, read-only token.
 permissions:
   contents: read
 
 jobs:
   pr:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       # The harness finds its siblings next to a checkout named e2e.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: e2e
           persist-credentials: false
+      # The firmware for the simulators, also when the change is elsewhere.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: BitBoxSwiss/bitbox02-firmware
@@ -55,6 +74,20 @@ jobs:
           path: bitbox-api-ts
           fetch-depth: 0
           persist-credentials: false
+      - if: inputs.repo == 'app'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: BitBoxSwiss/bitbox-wallet-app
+          path: bitbox-wallet-app
+          fetch-depth: 0
+          persist-credentials: false
+      - if: inputs.repo == 'rabby'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: RabbyHub/Rabby
+          path: Rabby
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Root prerequisites
         run: sudo e2e/ci/prereqs.sh
@@ -67,10 +100,17 @@ jobs:
 
       - name: e2e.py pr
         env:
+          REPO: ${{ inputs.repo }}
           BASE: ${{ inputs.base }}
           HEAD: ${{ inputs.head }}
           HEAD_REPO: ${{ inputs.head_repo }}
-        run: e2e/ci/pr.sh --base "$BASE" --head "$HEAD" ${HEAD_REPO:+--head-repo "$HEAD_REPO"} --out "$RUNNER_TEMP/report"
+          PINS: ${{ inputs.pins }}
+          GRAPHICAL: ${{ inputs.graphical }}
+          TESTS: ${{ inputs.tests }}
+          WC: ${{ inputs.walletconnect && '--wc' || '' }}
+        run: >-
+          e2e/ci/pr.sh --repo "$REPO" ${BASE:+--base "$BASE"} --head "$HEAD" ${HEAD_REPO:+--head-repo "$HEAD_REPO"}
+          --pins "$PINS" --graphical "$GRAPHICAL" --tests "$TESTS" $WC --out "$RUNNER_TEMP/report"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
