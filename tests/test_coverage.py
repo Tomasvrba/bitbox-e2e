@@ -6,7 +6,6 @@ import subprocess
 import pytest
 
 import coverage
-import e2e
 
 LIB = "src/rust/app/src/lib.rs"
 
@@ -52,8 +51,6 @@ def test_change_outside_mapped_rust_is_listed_as_unmapped(fw):
     r = coverage.select(base, head)
     assert r["units"] == [] and r["unreached"] == []
     assert r["unmapped"] == ["messages/eth.proto", "src/ui.c"]
-    note = e2e.unreached_note(r["unreached"], r["unmapped"])
-    assert "none" not in note and "src/ui.c" in note
 
 
 def test_change_in_mapped_rust_selects_its_units(fw):

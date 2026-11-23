@@ -31,9 +31,10 @@ E2E_DIR = RABBY_DIR.parent
 sys.path.insert(0, str(E2E_DIR))
 
 import bundle  # noqa: E402
+import report as report_mod  # noqa: E402
 from bundle import build_sim  # noqa: E402
 from rabby.run import SETUP_STEPS  # noqa: E402
-from report import fmt_ok, frame_rows, md_to_html  # noqa: E402
+from report import frame_rows  # noqa: E402
 
 RABBY_REPO = bundle.REPOS["rabby"].dir
 DEFAULT_REF = "v0.94.15"
@@ -174,8 +175,7 @@ def compare(sides, out):
         if not run_flow(sims[side], dists[side], out / side):
             failed.append(side)
         m = json.loads((out / side / "meta.json").read_text()) if (out / side / "meta.json").exists() else {}
-        m["label"] = f"{side}: {sides[side][0]}"
-        m["rabby_ref"] = sides[side][1]
+        m["firmware"], m["rabby_ref"] = sides[side]
         (out / side).mkdir(exist_ok=True)
         (out / side / "meta.json").write_text(json.dumps(m, indent=2))
     report(out)
@@ -241,69 +241,87 @@ def load(side_dir):
             "results": results, "order": [e["step"] for e in events if e.get("event") == "step-start"]}
 
 
+# What each step of flow.ts asks the device for, for the report.
+STEPS = {
+    "pairing": "Connect Rabby to the BitBox and pair",
+    "eth-personal-sign": "Sign a message (personal_sign) on Ethereum",
+    "eth-typed-data-v4": "Sign typed data (EIP-712) on Ethereum",
+    "eth-send-1559": "Send ETH (EIP-1559) on Ethereum",
+    "eth-erc20-transfer": "Send an ERC-20 token on Ethereum",
+    "switch-arbitrum": "Switch the dapp to Arbitrum One",
+    "arb-send-1559": "Send ETH (EIP-1559) on Arbitrum One",
+    "arb-erc20-transfer": "Send an ERC-20 token on Arbitrum One",
+    "switch-bsc": "Switch the dapp to BNB Chain",
+    "bsc-send-legacy": "Send BNB (legacy transaction) on BNB Chain",
+}
+
+
+def short_ref(ref):
+    return (ref or "-")[:9] if re.fullmatch(r"[0-9a-f]{40}", ref or "") else re.sub(r"^origin/", "", ref or "-")
+
+
 def report(out):
+    """report.render for a Rabby run, base vs head."""
     out = Path(out)
     b, h = load(out / "base"), load(out / "head")
     diffdir = out / "diff"
-    diffdir.mkdir(exist_ok=True)
-    steps = list(dict.fromkeys(h["order"] + b["order"]))
-    changed = "Rabby" if b["meta"].get("rabby_ref") != h["meta"].get("rabby_ref") else "firmware"
-    md = [f"# BitBox e2e: Rabby extension, {changed} base vs head", "",
-          "Unmodified Rabby talks to the graphical simulator through a fake BitBoxBridge "
-          "(bridge/sim_bridge.py); Rabby's backend is replayed from rabby/fixtures, chains are local anvils.", "",
-          "| | base | head |", "|---|---|---|"]
-    for k, label in (("label", "firmware"), ("source", "source"), ("simulator_version", "simulator"),
-                     ("rabby_ref", "Rabby"), ("seconds", "run time (s)")):
-        md.append(f"| {label} | {b['meta'].get(k, '-')} | {h['meta'].get(k, '-')} |")
-    md.append(f"| flow | {fmt_ok(b['meta'].get('ok'))} | {fmt_ok(h['meta'].get('ok'))} |")
-    md.append("")
+    steps = list(dict.fromkeys(h["order"] + b["order"] + list(STEPS)))
+    rabby_changed = b["meta"].get("rabby_ref") != h["meta"].get("rabby_ref")
+    pr_info = report_mod.load_pr_info(out)
+    globs = report_mod.intent(pr_info).get("expect")
+    side = {s: x["meta"] for s, x in (("base", b), ("head", h))}
+    what = "rabby_ref" if rabby_changed else "firmware"
+    f = {"repo": bundle.REPOS["rabby" if rabby_changed else "firmware"].slug, "pr": pr_info,
+         "intent": report_mod.intent(pr_info),
+         "title": (pr_info or {}).get("title") or f"Rabby flow: {short_ref(side['head'].get(what))}",
+         "sides": {"base": f"`{short_ref(side['base'].get(what))}`", "head": f"`{short_ref(side['head'].get(what))}`"},
+         "broke": [], "changes": [], "known": []}
 
-    sections, summary = [], ["| step | base | head | device frames (base/head) | changed |", "|---|---|---|---|---|"]
-    for step in steps:
-        fb = [f for f in b["frames"] if f["step"] == step]
-        fh = [f for f in h["frames"] if f["step"] == step]
-        rows, changed = [], 0
-        setup = step in SETUP_STEPS
-        if not setup:
-            for tag, fa, fc, d in frame_rows(fb, fh, out / "base", out / "head", diffdir):
-                changed += tag != "equal"
-                rows.append((fa, fc, "same" if tag == "equal" else f"![]({d.relative_to(out)})" if d else "**changed**"))
-        retries = sum(x["results"].get(step + "#retry", 0) for x in (b, h))
-        summary.append(f"| `{step}` | {b['results'].get(step, '-')} | {h['results'].get(step, '-')} | "
-                       f"{len(fb)}/{len(fh)} | {'(setup, not compared)' if setup else ('**' + str(changed) + '**' if changed else '0')}"
-                       f"{f' ({retries} retries)' if retries else ''} |")
-        sec = [f"## `{step}`", ""]
-        # Dapp-side shots show signatures/tx hashes (anti-klepto nonce), never equal; only Rabby's
-        # own screens are compared, and the base one is shown only if it differs.
-        heads, cells = [], []
-        for shot in [x for x in h["shots"] if x["step"] == step]:
-            heads.append(f"{'dapp' if shot['what'] == 'dapp' else 'Rabby'}: {shot['what']}")
-            cells.append(f"![{shot['what']}](head/{shot['file']})")
+    def step_rows(step):
+        fb = [x for x in b["frames"] if x["step"] == step]
+        fh = [x for x in h["frames"] if x["step"] == step]
+        rows = report_mod.frame_compare(frame_rows(fb, fh, out / "base", out / "head", diffdir), out, "base", "head")
+        for shot in [x for x in h["shots"] if x["step"] == step and x["what"] != "dapp"]:
+            # Dapp-side shots show signatures (anti-klepto nonce) and never match; Rabby's own do.
             twin = next((x for x in b["shots"] if x["file"] == shot["file"]), None)
-            if twin and shot["what"] != "dapp" and step not in SETUP_STEPS and \
-                    not rabby_shots_equal(out / "base" / twin["file"], out / "head" / shot["file"]):
-                heads.append(f"**base differs**: {shot['what']}")
-                cells.append(f"![{shot['what']}](base/{twin['file']})")
-        if cells:
-            sec += ["| " + " | ".join(heads) + " |", "|" + "---|" * len(cells), "| " + " | ".join(cells) + " |", ""]
-        if setup:
-            sec += ["Device (setup: unlock and a random pairing code, not compared):", "",
-                    " ".join(f"![]({s}/{f['file']})" for s, fs in (("head", fh),) for f in fs), ""]
-        elif rows:
-            sec += ["| base | head | |", "|---|---|---|"]
-            for fa, fc, st in rows:
-                ca = f"![]({'base/' + fa['file']})" if fa else "*(absent)*"
-                cc = f"![]({'head/' + fc['file']})" if fc else "*(absent)*"
-                sec.append(f"| {ca} | {cc} | {st} |")
-            sec.append("")
-        else:
-            sec += ["No device screens in this step.", ""]
-        sections += sec
-    md += ["## Steps", ""] + summary + [""] + sections
-    (out / "report.md").write_text("\n".join(md))
-    (out / "report.html").write_text(md_to_html(out, md))
-    log(f"report: {out / 'report.html'}")
-    print(out / "report.html")
+            if not twin or not rabby_shots_equal(out / "base" / twin["file"], out / "head" / shot["file"]):
+                rows.append({"label": f"Rabby: {shot['what']}", "before": f"base/{twin['file']}" if twin else None,
+                             "after": f"head/{shot['file']}", "photo": True})
+        return rows
+
+    tested = []
+    for i, step in enumerate(steps):
+        rb, rh = b["results"].get(step), h["results"].get(step)
+        text = STEPS.get(step, step)
+        tested.append(f"{text} (`{step}`): before {rb or 'not run'}, after {rh or 'not run'}.")
+        if step in SETUP_STEPS:
+            continue
+        if rb == "ok" and rh not in (None, "ok"):
+            later = [s for s in steps[i + 1:] if s not in h["results"]]
+            f["broke"].append({"title": f"Step \"{text}\" fails",
+                               "detail": f"It passed before this PR. With it: {rh.removeprefix('error: ')}."
+                                         + (f" Not run after this failure: {', '.join(f'`{s}`' for s in later)}."
+                                            if later else ""),
+                               "compare": step_rows(step)})
+        elif rb not in (None, "ok") and rh not in (None, "ok"):
+            f["known"].append(f"Step `{step}` fails before and after this PR: {rh.removeprefix('error: ')}")
+        elif rb == "ok" and rh == "ok" and (rows := step_rows(step)):
+            f["changes"].append({"title": f"Screens changed in step \"{text}\"", "where": [step],
+                                 "expected": report_mod.is_expected([step], globs), "compare": rows})
+    f["tested"] = [
+        "The Rabby browser extension (an unmodified build of each commit) signs with the BitBox02 simulator "
+        "through a stand-in for the BitBoxBridge. Rabby's backend is replayed from a recording; the chains are "
+        "local test chains.",
+        "Device screens are compared pixel by pixel, Rabby's own screens with a few pixels of slack.",
+        *tested]
+    f["details"] = [("Rabby", short_ref(side["base"].get("rabby_ref")), short_ref(side["head"].get("rabby_ref"))),
+                    ("firmware", short_ref(side["base"].get("firmware")), short_ref(side["head"].get("firmware"))),
+                    ("simulator", side["base"].get("simulator_version", "-"), side["head"].get("simulator_version", "-")),
+                    ("run time (s)", side["base"].get("seconds", "-"), side["head"].get("seconds", "-"))]
+    f["notes"] = ["Logs and every frame: base/ and head/ (frames.json, events.jsonl)."]
+    page = report_mod.render(out, f)
+    log(f"report: {page}")
+    print(page)
 
 
 def add_common(p):

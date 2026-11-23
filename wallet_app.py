@@ -1,9 +1,9 @@
 """`e2e.py pr --repo app`: the app's Playwright tests on one simulator, app base vs head."""
 
 import argparse
-import difflib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -11,14 +11,15 @@ from pathlib import Path
 
 import bundle
 from bundle import E2E_DIR, log
-from report import fmt_status, images_equal, md_to_html, pixel_diff, screen_lines, strip_ansi
+import report
+from report import strip_ansi
 from runs import ScreenParser
 
 WALLET_REPO = bundle.REPOS["app"].dir
 # What the app's own CI installs for its tests (tests/util/aopp/server.py), on python3's PATH.
 TEST_PYTHON_DEPS = ("ecdsa==0.19.1", "bech32==1.2.0")
 # Volatile device screens in app tests: random pairing codes and the current time.
-VOLATILE_TITLES = {"Pairing code", "Is now?"}
+VOLATILE_TITLES = {"Pairing code", "Is now?", "Is today?"}
 
 
 def wallet_clone(ref):
@@ -121,61 +122,89 @@ def cmd_app_change(args, firmware=None):
     if args.wc:
         from wc import flow
         wc_rc = flow.cmd_wc(argparse.Namespace(base=base, head=head, firmware=firmware, out=str(out / "wc")))
-        with open(out / "report.md", "a") as f:
-            f.write(f"\n## WalletConnect flow\n\n{'**Failed**' if wc_rc else 'Passed'} on "
-                    f"{'one side or both' if wc_rc else 'both sides'}: [wc/report.html](wc/report.html)\n")
+        (out / "wc.json").write_text(json.dumps({"rc": wc_rc}))
+        wallet_report(out)
         rc = max(rc, wc_rc)
     return rc
 
 
+# App tests create fresh wallets and random request ids, so these differ on every run.
+UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+
+
+def stable(screens):
+    """Device screens with the values that are random per app test run replaced by placeholders."""
+    out = []
+    for s in screens:
+        if s["fields"].get("TITLE") in VOLATILE_TITLES:
+            continue
+        fields = {k: UUID.sub("<random id>", v) for k, v in s["fields"].items()}
+        if fields.get("TITLE") == "Address" and "BODY" in fields:
+            fields["BODY"] = "<address of a random test wallet>"
+        out.append(dict(s, fields=fields))
+    return out
+
+
 def wallet_report(out):
+    """report.render for an app change; returns the regressions (tests that passed on base and do not
+    pass on head)."""
     out = Path(out)
     meta = {s: json.loads((out / s / "meta.json").read_text()) for s in ("base", "head")}
     tb = {t["title"]: t for t in json.loads((out / "base/tests.json").read_text())}
     th = {t["title"]: t for t in json.loads((out / "head/tests.json").read_text())}
-    md = ["# BitBoxApp e2e diff", "", "| | base | head |", "|---|---|---|",
-          f"| source | {meta['base']['source']} | {meta['head']['source']} |",
-          f"| simulator | {meta['base']['simulator']} | {meta['head']['simulator']} |",
-          f"| passed | {meta['base']['passed']}/{meta['base']['total']} | {meta['head']['passed']}/{meta['head']['total']} |"]
-    # Tests missing on one side were added or removed by the head ref; only passed -> not passed gates.
-    regressions = [f"`{t}`: passed on base, {th[t]['status']} on head" for t, b in tb.items()
-                   if b["status"] == "passed" and t in th and th[t]["status"] != "passed"]
-    # A test that fails on both sides says nothing about the change, often a broken environment.
-    both = [t for t, b in tb.items() if b["status"] != "passed" and th.get(t, {}).get("status") not in (None, "passed")]
-    md[1:1] = ["", "**Regressions**: " + ("; ".join(regressions) if regressions else "none"), "",
-               *([f"**Failing on base and head**: {len(both)} test(s), which therefore do not test the change: "
-                  + ", ".join(f"`{t}`" for t in both)] if both else [])]
-    for title in dict.fromkeys(list(tb) + list(th)):
-        b, h = tb.get(title, {}), th.get(title, {})
-        md.append(f"| `{title}` | {fmt_status(b)} | {fmt_status(h)} |")
-    md.append("")
-    diffdir = out / "diff"
-    diffdir.mkdir(exist_ok=True)
-    for title in dict.fromkeys(list(tb) + list(th)):
-        b, h = tb.get(title, {}), th.get(title, {})
-        sections = []
-        for side, t in (("base", b), ("head", h)):
-            if t.get("status") not in (None, "passed") and t.get("error"):
-                sections += [f"{side} error:", "```", *strip_ansi(t["error"]).splitlines()[:15], "```", ""]
-        diff = list(difflib.unified_diff(screen_lines(b.get("screens", [])), screen_lines(h.get("screens", [])),
-                                         "base", "head", lineterm="", n=1))
-        if diff:
-            sections += ["Device screens:", "```diff", *diff, "```", ""]
-        sb, sh = b.get("screenshot"), h.get("screenshot")
-        if sb and sh:
-            if not images_equal(out / "base" / sb, out / "head" / sh):
-                d = pixel_diff(out / "base" / sb, out / "head" / sh, diffdir / f"{len(md)}.png")
-                cd = f"![]({d.relative_to(out)})" if d else "(size differs)"
-                sections += ["| base (final) | head (final) | changed pixels |", "|---|---|---|",
-                             f"| ![](base/{sb}) | ![](head/{sh}) | {cd} |", ""]
-        elif sb or sh:
-            side, shot = ("base", sb) if sb else ("head", sh)
-            sections += [f"| {side} (final) |", "|---|", f"| ![]({side}/{shot}) |", ""]
-        if sections:
-            md += [f"## {title}", "", *sections]
-    (out / "report.md").write_text("\n".join(md))
-    (out / "report.html").write_text(md_to_html(out, md))
-    log(f"report: {out / 'report.md'}")
-    print(out / "report.md")
+    pr_info = report.load_pr_info(out)
+    globs = report.intent(pr_info).get("expect")
+    f = {"repo": bundle.REPOS["app"].slug, "pr": pr_info, "intent": report.intent(pr_info),
+         "title": (pr_info or {}).get("title") or meta["head"]["source"],
+         "sides": {"base": f"`{meta['base']['source']}`, where the PR branched off", "head": f"`{meta['head']['source']}`"},
+         "broke": [], "changes": [], "known": [], "cautions": []}
+    regressions = []
+    for title in dict.fromkeys([*tb, *th]):
+        b, h = tb.get(title), th.get(title)
+        if not b or not h:
+            continue
+        pairs = report.screen_changes(stable(b.get("screens", [])), stable(h.get("screens", [])))
+        if b["status"] == "passed" and h["status"] != "passed":
+            regressions.append(f"`{title}`: passed on base, {h['status']} on head")
+            f["broke"].append({
+                "title": f"Test `{title}`", "detail": f"Passed before this PR, {h['status']} with it.",
+                "excerpt": "\n".join(strip_ansi(h.get("error") or "").splitlines()[:40]) or None,
+                "screens": pairs, "photo": True,
+                "compare": [{"label": "Last screenshot of the test", "before": f"base/{b['screenshot']}" if b.get("screenshot") else None,
+                             "after": f"head/{h['screenshot']}" if h.get("screenshot") else None}]})
+        elif b["status"] != "passed" and h["status"] != "passed":
+            first = next((l for l in strip_ansi(h.get("error") or "").splitlines() if l.strip()), "")
+            f["known"].append(f"Test `{title}` fails before and after this PR" + (f": {first[:160]}" if first else ""))
+        elif pairs:
+            f["changes"].append({"title": report.change_title(pairs), "where": [title],
+                                 "expected": report.is_expected([title], globs), "screens": pairs})
+    added, removed = [t for t in th if t not in tb], [t for t in tb if t not in th]
+    passed = {s: f"{meta[s]['passed']} of {meta[s]['total']}" for s in meta}
+    f["tested"] = [
+        (f"The BitBoxApp's own Playwright tests, before and after this PR, on the simulator built from firmware "
+        f"`{meta['head']['simulator'][:9]}`: {passed['base']} passed before, {passed['head']} after."),
+        ("The device screens each test shows are compared as text. Values that are random in every test run "
+        "(wallet addresses, request ids) are masked."),
+        ("Screenshots are shown only for tests whose result changed. They are not compared pixel by pixel: "
+        "charts animate and test wallets are random, so every screenshot differs a little."),
+    ]
+    if added:
+        f["tested"].append("New tests in this PR: " + ", ".join(f"`{t}`" for t in added))
+    if removed:
+        f["tested"].append("Tests this PR removes: " + ", ".join(f"`{t}`" for t in removed))
+    wc = out / "wc.json"
+    if wc.exists():
+        if json.loads(wc.read_text())["rc"]:
+            f["broke"].append({"title": "The WalletConnect flow failed",
+                               "detail": "It failed before or after this PR. Its own report: wc/report.html."})
+        else:
+            f["tested"].append("The WalletConnect flow, before and after: passed. Its own report: wc/report.html.")
+    f["details"] = [("app", meta["base"]["source"], meta["head"]["source"]),
+                    ("simulator", meta["base"]["simulator"][:9], meta["head"]["simulator"][:9]),
+                    *((f"`{t}`", tb.get(t, {}).get("status", "-"), th.get(t, {}).get("status", "-"))
+                      for t in dict.fromkeys([*tb, *th]))]
+    f["notes"] = ["Logs: base/playwright.log, head/playwright.log; Playwright output in */test-results."]
+    page = report.render(out, f)
+    log(f"report: {page}")
+    print(page)
     return regressions
-

@@ -15,7 +15,9 @@ maintainer promotes approved screens.
   once with their committed vector copies (drift) and once with the firmware's vectors.
 
 The report is the product; the gate is secondary and fires only on regressions against the
-merge-base. `pr` exits 1 when a unit that completed on base fails on head, or when an API test
+merge-base. `pr` exits 1 when a unit that completed on base fails on head, when a BTC vector that
+must be rejected (its `outcome` for the head version) was rejected on base and completes on head,
+or when an API test
 that passed on base fails on head or an API suite errors on head (build, crash, no tests ran); 2
 when the harness itself fails; else 0. For a firmware change only the API run with the firmware's
 vectors gates; failures with the API repos' committed vector copies are drift, reported only. For
@@ -40,6 +42,18 @@ branch).
 
 `ci/pr.sh` is the same entry point for CI: it validates the form's inputs, fetches head from a fork
 and passes commits to `e2e.py pr`.
+
+## Report
+
+Each flow (`e2e.pr_findings`, `wallet_app.wallet_report`, `rabby_e2e.report`) turns its run
+directory into one `findings` dict (format in `report.py`): what broke, what changed on the device,
+what was there before, what was tested. `report.render` writes `report.html` (images linked
+relative to the directory, every one listed in `report-files.txt` for a publish step) and
+`summary.md` (for the CI run page and the PR comment). Text in findings comes from the code under
+test and the PR description: the page escapes it, the summary escapes Markdown outside code spans.
+With `--pr-info`, the report shows the PR, and the `expect:` globs of its `<!-- e2e -->` block mark
+each change as expected or not. No step of a run uses a language model: the report is rendered
+from the run's data only.
 
 ## Units
 

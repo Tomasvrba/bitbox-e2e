@@ -7,7 +7,8 @@
 
   e2e.py baseline <ref> [--graphical <glob>...] [-j N]       record the bundle for a firmware commit
   e2e.py pr [--repo firmware|app|api-rs|api-go|api-ts|rabby] [--base <ref>] --head <ref> --out <dir>
-            [--pin <repo>=<ref>...] [--graphical <glob>...] [--tests <file>...] [--wc] [-j N]
+            [--pin <repo>=<ref>...] [--graphical <glob>...] [--tests <file>...] [--wc] [--pr-info <file>] [-j N]
+  e2e.py report <pr-out-dir> [--pr-info <file>]               render the report again
   e2e.py promote <pr-out-dir> <unit-id>...                    head screens become expectations
   e2e.py device  --scenario scenarios/x.json --sim-dir <dir> --out <dir>   one scenario, one simulator
   e2e.py wc --base <app-ref> --head <app-ref> --out <dir> [--firmware <ref>]   WalletConnect flow (wc/)
@@ -34,7 +35,8 @@ import apis  # noqa: E402
 import bundle  # noqa: E402
 import expect  # noqa: E402
 from bundle import build_sim, log, read_text, sim_version  # noqa: E402
-from report import SETUP_STEPS, frames_md, md_to_html, results, screen_lines  # noqa: E402
+import report  # noqa: E402
+from report import SETUP_STEPS, frame_rows, plural, results, screen_lines  # noqa: E402
 import wallet_app  # noqa: E402
 from runs import cmd_device, driver_for, ensure_driver  # noqa: E402
 
@@ -153,18 +155,6 @@ def select_units(base_sha, head):
     return coverage.select(base_sha, head)
 
 
-def unreached_note(unreached, unmapped):
-    """Summary of changed code with no unit known to run it. Says "none" only when the coverage map
-    saw the whole diff: C, protos, token lists and build files have no coverage."""
-    if unreached is None:
-        return "n/a (no coverage map for the merge-base)"
-    s = ", ".join(f"`{f}`" for f in unreached)
-    if not unmapped:
-        return s or "none"
-    return ((s + "; " if s else "no mapped Rust function; ") + f"**{len(unmapped)} changed file(s) outside the "
-            "coverage map**, no unit known to reach them: " + ", ".join(f"`{f}`" for f in unmapped))
-
-
 def verdict(units, base_apis, head_apis, modes=("firmware",)):
     """Why the PR fails the gate, empty if it passes. Takes pr.json's units, base_apis and apis.
     Only regressions against the merge-base count: changed screens and expectation mismatches are
@@ -264,12 +254,31 @@ def cmd_pr(args):
     pins = parse_pins(args.pin, args.repo)
     if args.repo in ("app", "rabby") and set(pins) - {"firmware"}:
         sys.exit(f"--pin: only the firmware is used in a {args.repo} change")
+    # Read first: the flows start by emptying --out, which may hold the file.
+    pr_info = Path(args.pr_info).read_text() if args.pr_info else None
     if args.repo == "app":
-        return wallet_app.cmd_app_change(args, pins.get("firmware"))
-    if args.repo == "rabby":
+        rc = wallet_app.cmd_app_change(args, pins.get("firmware"))
+    elif args.repo == "rabby":
         from rabby import rabby_e2e
-        return rabby_e2e.cmd_rabby_change(args, pins.get("firmware"))
-    return cmd_device_change(args, pins)
+        rc = rabby_e2e.cmd_rabby_change(args, pins.get("firmware"))
+    else:
+        rc = cmd_device_change(args, pins)
+    if pr_info:
+        (Path(args.out) / "pr-info.json").write_text(pr_info)
+        render_report(Path(args.out))
+    return rc
+
+
+def render_report(out):
+    """Renders report.html and summary.md again from a run's directory, e.g. with pr-info.json added."""
+    if (out / "pr.json").exists():
+        return pr_report(out)
+    if (out / "base" / "tests.json").exists():
+        return wallet_app.wallet_report(out)
+    if (out / "base" / "frames.json").exists() or (out / "head" / "frames.json").exists():
+        from rabby import rabby_e2e
+        return rabby_e2e.report(out)
+    sys.exit(f"{out}: not the --out directory of e2e.py pr")
 
 
 def cmd_device_change(args, pins):
@@ -334,7 +343,7 @@ def cmd_device_change(args, pins):
         b, h = unit_dirs(uid)
         if frame_hashes(b) is not None and frame_hashes(h) is not None and frame_hashes(b) != frame_hashes(h):
             frames_only.add(uid)
-    # Base evidence next to the head's, so report.md's relative links work from a CI artifact.
+    # Base evidence next to the head's, so the report's relative image links work from a CI artifact.
     for uid in changed | graphical:
         b, _ = unit_dirs(uid)
         if b.exists():
@@ -397,15 +406,6 @@ def cmd_device_change(args, pins):
     return 1 if pr["verdict"] else 0
 
 
-def api_cell(r):
-    if r is None:
-        return "-"
-    if r.get("error") and not r.get("failing"):
-        return f"**ERROR** ({r['error']})"
-    s = f"{r['passed']} pass"
-    return s + (f" / **{r['failed']} FAIL**" if r["failed"] else "")
-
-
 def run_mode_note(rm):
     if not rm:
         return "-"
@@ -419,122 +419,188 @@ def short_sha(s):
     return "-" if not s else s[:9] + ("+dirty" if s.endswith("+dirty") else "")
 
 
-def pr_report(out):
+def ref_label(ref, sha):
+    """`my-branch` (`859df2be9`), or the commit alone when the ref is one."""
+    name = re.sub(r"^origin/", "", ref or "")
+    return f"`{sha[:9]}`" if not name or sha.startswith(name) else f"`{name}` (`{sha[:9]}`)"
+
+
+VECTOR_MODES = {"firmware": "the firmware's test vectors", "committed": "the test vectors committed in {suite}"}
+
+
+def api_failure(out, suite, mode, test, r, simulator, units):
+    """A newly failing API test as a report item: the test's own message, and the changed vector unit
+    it checks, if any."""
+    name = test.replace(f"/{simulator}", "") if simulator else test
+    item = {"title": f"{suite} simulator test `{name}`",
+            "detail": f"Run with {VECTOR_MODES[mode].format(suite=suite)}."}
+    log_path = out / "apis" / (r.get("log") or "")
+    if r.get("log") and log_path.is_file():
+        item["excerpt"] = apis.failure_excerpt(suite, log_path.read_text(errors="replace"), test)
+    text = name + "\n" + (item.get("excerpt") or "")
+    hit = next((i for i, u in units.items() if u["kind"] == "btc-vector" and u["status"] == "changed"
+                and re.search(rf"\b{re.escape(i.split('/', 1)[1])}\b", text)), None)
+    if hit:
+        item["detail"] += (f" The test compares the device screens with the expected screens of vector "
+                           f"`{hit.split('/', 1)[1]}`, and this PR changes them (see `{hit}` below). If the "
+                           "change is intended, update the vector's expected screens in the firmware's "
+                           "btc-transaction-test-vectors.json in this PR.")
+    return item
+
+
+def pr_findings(out):
+    """pr.json and the evidence next to it as report.render's findings."""
     out = Path(out)
     pr = json.loads((out / "pr.json").read_text())
-    units = pr["units"]
-    by = {k: [i for i, u in units.items() if u["status"] == k] for k in ("changed", "new", "frames-only", "unchanged")}
-    failed = [i for i, u in units.items() if not u["head_ok"]]
-    newly = [i for i in failed if units[i]["base_ok"]]
-    exp = {i: u["expect"] for i, u in units.items() if u["expect"]}
-    exp_n = {k: sum(e["status"] == k for e in exp.values()) for k in ("pass", "fail", "no-expectation")}
-    base, head = pr["base"], pr["head"]
-    repo = pr.get("repo", "firmware")  # pr.json from before --repo: firmware
+    pr_info = report.load_pr_info(out)
+    globs = report.intent(pr_info).get("expect")
+    units, repo, base, head = pr["units"], pr["repo"], pr["base"], pr["head"]
+    modes = ("firmware",) if repo == "firmware" else ("committed", "firmware")
+    head_sim, base_sim = pr["apis"].get("simulator"), (pr["base_apis"] or {}).get("simulator")
+    f = {"repo": bundle.REPOS[repo].slug, "pr": pr_info, "intent": report.intent(pr_info),
+         "title": (pr_info or {}).get("title") or f"{re.sub(r'^origin/', '', head['ref'])}",
+         "sides": {"base": ref_label(base["ref"], base["sha"]) + ", where the PR branched off",
+                   "head": ref_label(head["ref"], head["sha"])},
+         "broke": [], "changes": [], "minor": [], "known": [], "followups": [], "cautions": [], "untested": []}
 
-    md = [f"# BitBox e2e: {repo} `{base['ref']}` -> `{head['ref']}`", "",
-          "| | base (merge-base) | head |", "|---|---|---|",
-          f"| {repo} | `{base['sha'][:9]}` | `{head['ref']}` (`{head['sha'][:9]}`) |",
-          *([f"| firmware | `{base['firmware'][:9]}` | `{head['firmware'][:9]}` |"] if repo != "firmware" else []),
-          f"| simulator | {base['simulator_version']} | {head['simulator_version']} |",
-          f"| harness | `{short_sha(base['harness_sha'])}` | `{short_sha(head['harness_sha'])}` |"]
-    base_revs, head_revs = base.get("revisions") or {}, head.get("revisions") or {}
-    md += [f"| {k} | `{short_sha(base_revs.get(k))}` | `{short_sha(v)}` |" for k, v in head_revs.items() if k != repo]
-    md.append("")
-    if base["harness_sha"] != head["harness_sha"]:
-        md += ["*The baseline was recorded with another harness revision; harness changes can show up as diffs.*", ""]
-    if diffs := revision_diffs(base_revs, head_revs, None if repo == "firmware" else repo):
-        md += [f"*Not only the {repo} differs: {', '.join(diffs)} ran at another revision on base than on head; "
-               "their changes can show up as diffs or API test failures (not gating by themselves).*", ""]
-    md += ["## Verdict", ""]
-    if pr["verdict"]:
-        md += [f"**REGRESSION**: {len(pr['verdict'])} reason(s), the run exits 1.", "",
-               *[f"- {r}" for r in pr["verdict"]], ""]
-    else:
-        md += ["**No regressions**: every unit and API test that passed on the merge-base passes on head.", ""]
-    drift = api_newly_failing(pr["base_apis"], pr["apis"], "committed") if repo == "firmware" else {}
-    md += [f"Not gating, for review: {len(by['changed'])} changed and {len(by['new'])} new unit(s), "
-           f"{exp_n['fail']} expectation mismatch(es) (promote after the PR merges)"
-           + (f", {sum(map(len, drift.values()))} API test(s) newly failing with the API repos' committed "
-              f"vectors ({', '.join(drift)}: sync their vector copies after the merge)" if drift else "") + ".", ""]
-    md += ["## Summary", "",
-           f"- **Units**: {len(units)} run headless, {len(by['changed'])} changed "
-           f"({sum(not units[i].get('same_as') for i in by['changed'])} distinct), "
-           f"{len(by['new'])} new, {len(by['frames-only'])} with graphical-only differences, "
-           f"{len(failed)} failed on head ({len(newly)} newly)"
-           + (f", {len(pr['removed'])} removed" if pr["removed"] else ""),
-           f"- **Expectations** (not gating): {exp_n['pass']} pass, {exp_n['fail']} fail, {exp_n['no-expectation']} without "
-           f"expectation for this version, {len(units) - len(exp)} units without expectations",
-           "- **Unreached changed functions**: " + (unreached_note(pr["unreached"], pr.get("unmapped"))
-                                                     if repo == "firmware" else "n/a (coverage maps firmware code only)"),
-           *[f"- **No BTC vectors file at {side}** (`{pr[side].get('firmware', pr[side]['sha'])[:9]}`, before firmware 3bdaf583b): btc-vector "
-             "units unavailable there, the API suites ran with their committed vectors only"
-             for side in ("base", "head") if pr[side].get("vectors") is False],
-           "- **Run mode**: " + run_mode_note(pr.get("run_mode")),
-           "- **Timings**: " + ", ".join(f"{k} {v}s" for k, v in pr["timings"].items()), ""]
+    for uid, u in sorted(units.items()):
+        if u["base_ok"] and not u["head_ok"]:
+            f["broke"].append({"title": f"Scenario `{uid}` no longer completes",
+                               "detail": "It completed before this PR.", "excerpt": u.get("head_error")})
+        elif rejects(u) and u["base_ok"] is False and u["head_ok"]:
+            f["broke"].append({"title": f"Vector `{uid}` is no longer rejected",
+                               "detail": f"The device must reject it ({u['outcome'].replace('_', ' ')}). It did "
+                                         "before this PR; with it, the device completes it."})
+        elif rejects(u) and not u["head_ok"]:
+            pass  # rejected as it must be
+        elif u["base_ok"] is False and not u["head_ok"]:
+            f["known"].append(f"Scenario `{uid}` fails before and after this PR: {u.get('head_error') or 'see its log'}")
+    base_suites = (pr["base_apis"] or {}).get("suites", {})
+    for suite, by_mode in pr["apis"]["suites"].items():
+        for mode, r in by_mode.items():
+            gating = mode in modes
+            if r.get("error"):
+                (f["broke"] if gating else f["known"]).append(
+                    {"title": f"{suite} simulator tests did not run ({VECTOR_MODES[mode].format(suite=suite)})",
+                     "detail": f"Error: {r['error']}. Log: apis/{r.get('log')}"} if gating
+                    else f"{suite} simulator tests did not run with {VECTOR_MODES[mode].format(suite=suite)}: {r['error']}")
+            newly = api_newly_failing(pr["base_apis"], pr["apis"], mode).get(suite, [])
+            if gating:
+                f["broke"] += [api_failure(out, suite, mode, t, r, head_sim, units) for t in newly]
+            elif newly:
+                f["followups"].append(f"Update the copy of the firmware's test vectors in {suite}: "
+                                      f"{plural(len(newly), 'test')} now {'fails' if len(newly) == 1 else 'fail'} with it.")
+            b = base_suites.get(suite, {}).get(mode) or {}
+            failed_before = {api_test_key(t, base_sim) for t in b.get("failing", [])}
+            old = [t for t in r.get("failing", []) if api_test_key(t, head_sim) in failed_before]
+            if old:
+                f["known"].append(f"{suite} with {VECTOR_MODES[mode].format(suite=suite)}: "
+                                  f"{plural(len(old), 'test')} {'fails' if len(old) == 1 else 'fail'} before and after this PR"
+                                  + (" (its copy of the vectors is out of date)" if mode == "committed" else ""))
 
-    suites = pr["apis"]["suites"]
-    bs = (pr["base_apis"] or {}).get("suites", {})
-    md += ["### API simulator suites", "",
-           "Committed vectors: the repo's own copy (drift vs. firmware). Firmware vectors: the head firmware's "
-           "vectors copied in (regression).", "",
-           "| suite | head: committed vectors | head: firmware vectors | base: committed | base: firmware |",
-           "|---|---|---|---|---|"]
-    for s, modes in suites.items():
-        md.append(f"| {s} | {api_cell(modes.get('committed'))} | {api_cell(modes.get('firmware'))} | "
-                  f"{api_cell(bs.get(s, {}).get('committed'))} | {api_cell(bs.get(s, {}).get('firmware'))} |")
-    md.append("")
-    for s, modes in suites.items():
-        for mode, r in modes.items():
-            if r.get("failing"):
-                md += [f"<details><summary>{s} ({mode} vectors): {len(r['failing'])} failing, log apis/{r['log']}"
-                       "</summary>", "", *[f"- `{n}`" for n in r["failing"]], "", "</details>", ""]
+    def unit_dirs(u):
+        return Path("base/units") / u["slug"], Path("head/units") / u["slug"]
 
-    if exp_n["fail"]:
-        md += ["## Expectation failures", ""]
-        for i, e in exp.items():
-            if e["status"] == "fail":
-                md += [f"### {i}", "", "```diff", *e["diff"].splitlines(), "```", ""]
-
-    titles = {"changed": "Changed units", "new": "New units",
-              "frames-only": "Graphical-only differences (same text; often capture timing, e.g. a toast)"}
-    for kind in titles:
-        if by[kind]:
-            md += [f"## {titles[kind]}", ""]
-        for i in by[kind]:
-            u = units[i]
-            if u.get("same_as"):
-                continue
-            b, h = Path("base/units") / u["slug"], Path("head/units") / u["slug"]
-            md += [f"### {i}", ""]
-            same = [j for j, v in units.items() if v.get("same_as") == i]
-            if same:
-                md += [f"Same screen change in {len(same)} more unit(s): " + ", ".join(f"`{j}`" for j in same), ""]
-            if not u["head_ok"] or u["base_ok"] is False:
-                rb, rh = results(out / b), results(out / h)
-                md += ["| step | base | head |", "|---|---|---|"]
-                md += [f"| `{st}` | {rb.get(st, '-')} | {rh.get(st, '-')} |" for st in dict.fromkeys([*rb, *rh])]
-                md.append("")
-            sb, sh = screen_lines(load_screens(out / b)), screen_lines(load_screens(out / h))
-            diff = list(difflib.unified_diff(sb, sh, "base", "head", lineterm="", n=1))
-            md += ["Headless screens:", ""]
-            md += ["```diff", *diff, "```", ""] if diff else [f"No change ({len(sb)} screens).", ""]
+    stale, stale_changed = [], []
+    for uid, u in units.items():
+        b, h = unit_dirs(u)
+        exp_fail = (u.get("expect") or {}).get("status") == "fail"
+        if u["status"] in ("changed", "new") and not u.get("same_as"):
+            ids = [uid] + [j for j, v in units.items() if v.get("same_as") == uid]
+            pairs = report.screen_changes(load_screens(out / b) if u["status"] == "changed" else [],
+                                          load_screens(out / h))
+            c = {"title": f"New scenario `{uid}`" if u["status"] == "new" else report.change_title(pairs),
+                 "where": ids, "expected": report.is_expected(ids, globs), "screens": pairs, "notes": []}
             if u["graphical"]:
-                md += ["Graphical frames:", ""] + frames_md(out, str(b / "graphical"), str(h / "graphical"),
-                                                            str(Path("diff") / u["slug"]))
+                c["compare"] = graphical_compare(out, b, h, u["slug"])
+            if u["base_ok"] != u["head_ok"]:
+                c["notes"].append(f"Run result: {'completed' if u['base_ok'] else 'failed'} before, "
+                                  f"{'completed' if u['head_ok'] else 'failed'} after.")
+            if exp_fail and u["kind"] == "btc-vector":
+                c["notes"].append("The firmware's test vectors still expect the old screens for this vector.")
+            elif exp_fail:
+                stale_changed += [i for i in ids if (units[i].get("expect") or {}).get("status") == "fail"]
+            f["changes"].append(c)
+        elif u["status"] == "frames-only":
+            f["minor"].append({"title": f"`{uid}`", "compare": graphical_compare(out, b, h, u["slug"])})
+        elif u["status"] == "unchanged" and exp_fail:
+            stale.append(uid)
+    if stale_changed:
+        f["followups"].append(f"If the screen changes of these {plural(len(stale_changed), 'scenario')} are "
+                              "intended, approve them as their new expected screens after the merge: "
+                              f"`e2e.py promote <report dir> {' '.join(sorted(stale_changed))}`")
+    if stale:
+        f["known"].append(f"{plural(len(stale), 'scenario')} differ from their approved screens before and after "
+                          "this PR: " + ", ".join(f"`{i}`" for i in sorted(stale)))
+    for uid in pr["removed"]:
+        f["changes"].append({"title": f"Scenario `{uid}` was removed", "where": [uid],
+                             "expected": report.is_expected([uid], globs)})
 
-    if by["unchanged"]:
-        md += ["## Unchanged units", "", f"<details><summary>{len(by['unchanged'])} units with identical screens"
-               "</summary>", ""]
-        for i in by["unchanged"]:
-            u = units[i]
-            n = len(screen_lines(load_screens(out / "head/units" / u["slug"])))
-            md.append(f"- `{i}`: {n} screens" + ("" if u["head_ok"] else ", **failed on base and head**"))
-        md += ["", "</details>", ""]
+    if base["harness_sha"] != head["harness_sha"]:
+        f["cautions"].append("Before and after ran with different versions of this test tool; some differences "
+                             "can come from the tool.")
+    base_revs, head_revs = base.get("revisions") or {}, head.get("revisions") or {}
+    if diffs := revision_diffs(base_revs, head_revs, None if repo == "firmware" else repo):
+        f["cautions"].append(f"Not only {repo} differs: {', '.join(diffs)} ran at another version before than "
+                             "after. Their changes can show up here too.")
+    for side in ("base", "head"):
+        if pr[side].get("vectors") is False:
+            f["cautions"].append(f"The firmware {'before' if side == 'base' else 'after'} this PR has no BTC test "
+                                 "vectors file: no btc-vector scenarios and no API run with the firmware's vectors.")
 
-    (out / "report.md").write_text("\n".join(md))
-    (out / "report.html").write_text(md_to_html(out, md))
-    log(f"report: {out / 'report.html'}")
-    print(out / "report.html")
+    kinds = {}
+    for uid in units:
+        k = {"btc-vector": "BTC test vector", "eth-matrix": "Ethereum chain case"}.get(uid.split("/")[0], "scenario")
+        kinds[k] = kinds.get(k, 0) + 1
+    n_graph = sum(u["graphical"] for u in units.values())
+    fw = "" if repo == "firmware" else f", firmware `{base['firmware'][:9]}`"
+    f["tested"] = [
+        f"{plural(len(units), 'device scenario')} ({', '.join(plural(n, k) for k, n in kinds.items())}), "
+        f"each run on the simulator before and after this PR{fw}. Their screens are compared as text.",
+        (f"{n_graph} of them also as screenshots: the changed ones"
+         + (f" and {', '.join(f'`{g}`' for g in pr['graphical_globs'])}" if pr.get("graphical_globs") else "") + ".")
+        if n_graph else "No screenshots: no screen changed.",
+    ]
+    for suite, by_mode in pr["apis"]["suites"].items():
+        parts = []
+        for mode, r in by_mode.items():
+            b = base_suites.get(suite, {}).get(mode)
+            total = r["passed"] + r["failed"]
+            before = f" (before: {b['passed']} of {b['passed'] + b['failed']})" if b else ""
+            parts.append(f"{r['passed']} of {total} pass with {VECTOR_MODES[mode].format(suite=suite)}{before}")
+        f["tested"].append(f"The {suite} library's simulator tests: " + "; ".join(parts) + ".")
+    if repo == "firmware":
+        if pr["unreached"] is None:
+            f["tested"].append("Not known which changed code no scenario runs: there is no coverage map for this base.")
+        else:
+            f["untested"] += [f"`{x}`" for x in pr["unreached"]]
+            f["untested"] += [f"`{x}` (C or other code that coverage cannot see)" for x in pr.get("unmapped") or []]
+
+    f["details"] = [(repo, short_sha(base["sha"]), short_sha(head["sha"]))]
+    if repo != "firmware":
+        f["details"].append(("firmware", short_sha(base["firmware"]), short_sha(head["firmware"])))
+    f["details"] += [("simulator", base["simulator_version"], head["simulator_version"]),
+                     ("test tool", short_sha(base["harness_sha"]), short_sha(head["harness_sha"]))]
+    f["details"] += [(k, short_sha(base_revs.get(k)), short_sha(v)) for k, v in head_revs.items() if k != repo]
+    f["notes"] = ["Run mode: " + run_mode_note(pr.get("run_mode")),
+                  "Timings: " + ", ".join(f"{k} {v}s" for k, v in pr["timings"].items()),
+                  "Data: pr.json; logs: head/units/*/headless, apis/*.log."]
+    return f
+
+
+def graphical_compare(out, b, h, slug):
+    """Compare rows for the frames of a unit that differ between base and head."""
+    def frames(d):
+        p = out / d / "graphical" / "frames.json"
+        return [x for x in json.loads(p.read_text()) if x["step"] not in SETUP_STEPS] if p.exists() else []
+    rows = frame_rows(frames(b), frames(h), out / b / "graphical", out / h / "graphical", out / "diff" / slug)
+    return report.frame_compare(rows, out, f"{b}/graphical", f"{h}/graphical")
+
+
+def pr_report(out):
+    page = report.render(out, pr_findings(out))
+    log(f"report: {page}")
+    print(page)
 
 
 def cmd_promote(args):
@@ -579,6 +645,9 @@ def main():
             b.add_argument("--tests", nargs="+", default=[], metavar="FILE",
                            help="app change: Playwright test files to run, relative to frontends/web (default: all)")
             b.add_argument("--wc", action="store_true", help="app change: also the WalletConnect flow")
+            b.add_argument("--pr-info", metavar="FILE", help="the PR as JSON (`gh pr view --json url,number,"
+                           "title,body`, plus repo): the report shows its title and description, and its "
+                           "<!-- e2e expect: ... --> globs mark changes as expected")
         b.add_argument("--pin", action="append", default=[], metavar="REPO=REF",
                        help=f"run another repo at this ref on both sides ({', '.join(PIN_REPOS)}); "
                        "default: the sibling checkout's HEAD for the API repos, upstream master for the firmware")
@@ -586,6 +655,9 @@ def main():
                        help="unit id globs to also run on the graphical simulator")
         b.add_argument("-j", "--jobs", type=int, default=bundle.JOBS,
                        help=f"units in parallel (default: half the CPUs, {bundle.JOBS})")
+    rp = sub.add_parser("report", help="render report.html and summary.md again from a pr --out directory")
+    rp.add_argument("dir")
+    rp.add_argument("--pr-info", metavar="FILE", help="as for pr")
     pm = sub.add_parser("promote")
     pm.add_argument("dir", help="e2e.py pr --out directory")
     pm.add_argument("units", nargs="+")
@@ -630,6 +702,12 @@ def dispatch(args):
         return cmd_baseline(args)
     if args.cmd == "pr":
         return cmd_pr(args)
+    if args.cmd == "report":
+        out = Path(args.dir)
+        if args.pr_info:
+            (out / "pr-info.json").write_text(Path(args.pr_info).read_text())
+        render_report(out)
+        return 0
     return cmd_promote(args)
 
 

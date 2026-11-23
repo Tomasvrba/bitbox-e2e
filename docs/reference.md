@@ -8,6 +8,7 @@ Details behind [the README](../README.md). [DESIGN.md](../DESIGN.md) is the cont
 |---|---|
 | `e2e.py pr` | One change, base vs head ([below](#e2epy-pr)) |
 | `e2e.py baseline <fw-ref> [--pin ...] [--graphical ...]` | Record the "before" bundle of a firmware commit |
+| `e2e.py report <pr-out> [--pr-info <file>]` | Render the report of a run again ([below](#the-report)) |
 | `e2e.py promote <pr-out> <unit>...` | Approved head screens become a scenario's expectation |
 | `e2e.py device --scenario <json> --sim-dir <dir> --out <dir>` | One scenario on one simulator |
 | `e2e.py wc --base --head --out [--firmware]` | WalletConnect flow at two app refs |
@@ -57,7 +58,8 @@ versions in `TEST_PYTHON_DEPS`.
 
 ```sh
 e2e/e2e.py pr [--repo firmware|app|api-rs|api-go|api-ts|rabby] [--base <ref>] --head <ref|WORKTREE> \
-  --out <dir> [--pin <repo>=<ref>...] [--graphical <glob>...] [--tests <file>...] [--wc] [-j N]
+  --out <dir> [--pin <repo>=<ref>...] [--graphical <glob>...] [--tests <file>...] [--wc] \
+  [--pr-info <file>] [-j N]
 ```
 
 Refs are resolved in the sibling checkout of `--repo`. `--base` defaults to the default branch of
@@ -88,6 +90,8 @@ Steps:
 The verdict (exit 1) lists:
 
 - Units that completed on base and fail on head.
+- BTC vectors the device must reject (outcome `invalid_input` or `unsupported`) that were rejected
+  on base and complete on head. A rejected vector "fails" by design and is not reported.
 - API suite tests that passed on base and fail on head, and suites that error on head (build
   failure, crash, no tests ran). For a firmware change only the run with the firmware's vectors
   counts: the API repos' committed copies assert the screens of the firmware they were synced from,
@@ -102,9 +106,13 @@ vector copies.
 The app's own Playwright tests (`frontends/web/tests`, all unless `--tests`) run from clean clones of
 the merge-base and of head, on one natively built simulator (pinned firmware, default upstream
 `master`). Chromium only, no retries, screenshot/video/trace always on
-(`wallet/playwright.evidence.config.ts`). The report lists per-test status, errors, the device screen
-diff from each test's `simulator.log`, and final screenshots that differ. Exit 1 when a test that
-passed on base does not pass on head. With `--wc` the [WalletConnect flow](#walletconnect-flow) also
+(`wallet/playwright.evidence.config.ts`). The report shows each test that passed on base and fails
+on head with its error, its device screens and its last screenshot on both sides; device screen
+changes (from each test's `simulator.log`) of the other tests; and tests failing on both sides.
+Device screens are compared with the values that are random per test run masked (wallet addresses,
+request ids, the date). Screenshots are not compared pixel by pixel: charts animate and test
+wallets are random, so they differ on every run. Exit 1 when a test that passed on base does not
+pass on head. With `--wc` the [WalletConnect flow](#walletconnect-flow) also
 runs, into `<out>/wc`, and its failure also exits 1.
 
 ### Rabby changes
@@ -133,21 +141,40 @@ A unit is one scenario run (`units.py <firmware-dir>` lists them):
   `typed-data` (USDC permit). 49 units. Expectations live in
   `scenarios/eth-matrix/<chain id>-<case>.json`, written by `promote`.
 
-### Report sections
+### The report
 
-- Verdict: the gate's reasons, and the non-gating counts.
-- Summary: units run, changed/new/failed counts, expectation pass/fail, changed functions no unit
-  reached and changed files the coverage map cannot see (firmware changes), run mode, phase timings.
-- API simulator suites: per suite, committed vs firmware vectors, head and base.
-- Expectation failures: diff of expected vs head screens.
-- Changed units: headless screen diff (authoritative: full addresses, no scrolling) and the
-  graphical frames that differ, aligned by content hash. Units with the identical change are folded
-  into the first one.
-- Graphical-only differences: same text, different frames. Usually layout or font changes; capture
-  timing is also possible, rerun the unit to tell.
-- The header lists the harness revision and the other revisions under test: the `bitbox-api-rs` the
-  driver links (`+dirty` with uncommitted changes) and the API repos the suites ran. A difference
-  between base and head other than the repo under test is flagged under the table; it does not gate.
+Every flow writes the same files to `--out`:
+
+- `report.html`: the report. It links its images (relative paths), so open it inside the directory.
+- `summary.md`: the result and one line per finding, for the CI run page and the PR comment.
+- `report-files.txt`: `report.html` and every image it shows, for a step that publishes the report.
+- `pr.json` (firmware and API changes), `*/tests.json` (app), `*/frames.json` (Rabby): the data.
+
+The page, top to bottom:
+
+1. The PR title and link (with `--pr-info`), base and head.
+2. The result: what broke, how many device screens changed, how many problems were there before.
+3. **What this PR should change**: the PR description, and the screen changes it expects.
+4. **What broke**: each test or scenario that passed on base and fails on head, with the failure
+   message (for the API suites, extracted from their log) and the screens of the failure.
+5. **What changed on the device**: one card per change, with the screens as text, before and after,
+   and the frames that differ with the change marked. Changes of the same kind (the same title,
+   e.g. another fee per chain) are one card; the others are under it.
+6. **To do after merge**, **What was tested**, then collapsed: problems on both sides, pixel-only
+   differences (same screen text; usually capture timing), run details (versions, run mode, timings).
+
+`--pr-info <file>` is the PR as JSON: `gh pr view <n> -R <repo> --json url,number,title,body` with a
+`repo` key added. An optional block in the PR description lists the expected screen changes as unit
+id globs (app: test titles; Rabby: step names):
+
+```
+<!-- e2e
+expect: btc-vector/*fee*
+-->
+```
+
+A change that matches is marked *Expected*, any other *Not expected*. Without the block every change
+is *To review*. `e2e.py report <dir> [--pr-info <file>]` renders the page again, e.g. after adding the PR.
 
 Device setup (pairing code, unlock, seeding) differs every run and is kept out of the diffs.
 Signatures differ between runs because anti-klepto randomizes the host nonce.

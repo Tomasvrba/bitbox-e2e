@@ -98,11 +98,10 @@ fi
 rc=0
 "$BITBOX_E2E_DIR/e2e.py" pr --repo "$repo" --base "$base_ref" --head "$head_ref" --out "$out" "${extra[@]}" || rc=$?
 
-# The top of the report (revisions, verdict, summary) on the run's page; the rest is in the artifact.
+# The result and one line per finding on the run's page; the report itself is in the artifact.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  if [ -f "$out/report.md" ]; then
-    # Images are relative links into the artifact; they would show as broken here.
-    sed '/^### /,$d; /!\[/d' "$out/report.md" >> "$GITHUB_STEP_SUMMARY"
+  if [ -f "$out/summary.md" ]; then
+    cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
   else
     echo "e2e.py pr wrote no report (exit $rc); see the job log." >> "$GITHUB_STEP_SUMMARY"
   fi

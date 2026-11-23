@@ -124,6 +124,42 @@ def parse(suite, text, out_json):
     }
 
 
+def failure_excerpt(suite, text, test, limit=60):
+    """One failing test's message from a suite's log, for the report; None if it is not found."""
+    lines = re.sub(r"\x1b\[[0-9;]*m", "", text).splitlines()
+    out = []
+    if suite == "api-go":
+        # testify: the block under `=== RUN   <test>`, from `Error:` to `Test:`.
+        start = next((i for i, l in enumerate(lines) if l.strip() == f"=== RUN   {test}"), None)
+        if start is not None:
+            for l in lines[start + 1:]:
+                if l.startswith("=== RUN") or l.strip().startswith("Test:"):
+                    break
+                if out or l.strip().startswith("Error:"):
+                    out.append(" ".join(l.strip().split("\t")))
+    elif suite == "api-rs":
+        start = next((i for i, l in enumerate(lines) if f"thread '{test}'" in l and "panicked" in l), None)
+        if start is not None:
+            for l in lines[start + 1:]:
+                if l.startswith(("note: run with", "failures:", "thread '")):
+                    break
+                out.append(l)
+    else:
+        # vitest: ` FAIL  <project> <file> > <describe> > <test>` up to the next ⎯⎯⎯ rule.
+        start = next((i for i, l in enumerate(lines)
+                      if "FAIL" in l and test in re.sub(r"\s+>\s+", " ", l)), None)
+        if start is not None:
+            for l in lines[start + 1:]:
+                if "⎯⎯⎯" in l:
+                    break
+                out.append(l)
+    while out and not out[-1].strip():
+        out.pop()
+    if not out:
+        return None
+    return "\n".join(out[:limit] + ([f"... {len(out) - limit} more lines in the log"] if len(out) > limit else []))
+
+
 def suite_error(code, res):
     """Why a suite run says nothing about the firmware, or None. `res` is parse()'s output."""
     # A non-zero exit with no failing test parsed means the suite itself broke (panic, compile, setup).

@@ -17,21 +17,21 @@ Read the README before the first run.
    `--graphical <glob>` for units whose screenshots the reviewer needs (changed units get them
    anyway); the first run for a merge-base records its baseline, later runs reuse it. App: `--tests
    <file>...` to run fewer than all tests, `--wc` for the WalletConnect flow.
-4. **Read `report.md`.** The *Verdict* section and the exit code (0 clean, 1 regression, 2
-   harness error) say whether anything that worked on the merge-base broke.
-   - Lane A, evidence: *Changed units* and *New units* are what the change looks like on the
-     device (headless screen diff is authoritative; frames are the screenshots that differ).
-     *Graphical-only differences* are layout changes or capture timing: rerun that unit once
-     (`--graphical <id>`) to classify.
-   - Lane B, regression: units failing on head that passed on base and the API suites with the
-     firmware's vectors gate. Reported only: expectation failures (promoted after the firmware
-     PR merges) and API suite failures with committed vectors (drift of that repo's copy).
-   - *Unreached changed functions*: changed firmware code no unit executes, and changed files the
+4. **Read `summary.md`, then `report.html`.** The exit code (0 clean, 1 regression, 2 harness
+   error) and *What broke* say whether anything that worked on the merge-base broke.
+   - *What changed on the device*: what the change looks like on the device (screens as text are
+     authoritative; frames are the screenshots that differ). *Pixel-only differences* are layout
+     changes or capture timing: rerun that unit once (`--graphical <id>`) to classify.
+   - *What broke* gates: units failing on head that passed on base, vectors that must be rejected
+     and now complete, and the API suites with the firmware's vectors (for an API change also with
+     the committed vectors). Reported only: expectation failures (*To do after merge*) and API
+     failures with committed vectors on a firmware change (drift of that repo's copy).
+   - *Not tested by any scenario*: changed firmware code no unit executes, and changed files the
      coverage map cannot see (C, protos, token lists). If non-empty, run the draft procedure below
      before reporting.
-   - A note under the header table that the harness or another revision under test (the
-     `bitbox-api-rs` tree the driver links, the API repos) differs between base and head: a
-     difference may come from that rather than the firmware; check before attributing it.
+   - A caution at the top that the harness or another revision under test (the `bitbox-api-rs`
+     tree the driver links, the API repos) differs between base and head: a difference may come
+     from that rather than the change; check before attributing it.
    Done when every differing screen and every failure is explained as the intended change, a
    regression, or noise (capture timing, hover state).
 5. **Report**: the screen-level change in one or two sentences, lane B pass/fail, each

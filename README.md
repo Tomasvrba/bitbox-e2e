@@ -37,8 +37,9 @@ Use this procedure to test a pull request (PR) without a local setup.
 
 A run takes 10 to 35 minutes. When the run is complete:
 
-- The run page shows the top of the report: the verdict and the summary.
-- The **e2e-report** artifact has the full report with the screenshots. Open `report.html`.
+- The run page shows the result and one line for each finding.
+- The **e2e-report** artifact has the full report with the screenshots. Download it, unzip it, and
+  open `report.html`.
 
 The run fails (red) only if there is a regression. Changed screens do not make the run fail. A
 reviewer must look at them.
@@ -103,6 +104,8 @@ Options:
   Default: the upstream `master` for the firmware, and your checkout's `HEAD` for the API repos.
 - `--graphical <glob>`: firmware or API change: also take screenshots of these scenarios.
 - `--tests <file>...`, `--wc`: app change, as in [Workflow fields](#workflow-fields).
+- `--pr-info <file>`: the PR, from `gh pr view <number> -R <repo> --json url,number,title,body`. The
+  report then shows the PR title and description.
 
 The first run for a firmware version builds the simulators and records the "before" results. This
 takes 10 to 20 minutes. Later runs use the cache in `~/.cache/bitbox-e2e`.
@@ -111,8 +114,9 @@ takes 10 to 20 minutes. Later runs use the cache in `~/.cache/bitbox-e2e`.
 
 The tool writes these files to the `--out` directory:
 
-- `report.html`: the report with all images in one file. Open it in a browser.
-- `report.md`: the same report, with links to the images in the directory.
+- `report.html`: the report. Open it in a browser. Keep it in the directory: it shows the images
+  from there.
+- `summary.md`: the result and one line for each finding.
 - `pr.json`: the data of the report (firmware and API changes).
 
 The exit code tells the result:
@@ -125,17 +129,28 @@ The exit code tells the result:
 
 ## Read the report
 
-1. Read the **Verdict**. It lists each regression.
-2. Read the table at the top. It shows the version of each repo, before and after.
-3. If the note under the table says that another repo has a different version, then a difference can come from that repo.
-4. Look at the changed screens. Make sure that each change is what the PR intends.
+The report starts with the result: what broke, and how many device screens changed. Then it has
+these sections:
 
-These items do not make the run fail, but they need a decision:
+1. **What this PR should change**: the PR description. Compare the changes below with it.
+2. **What broke**: each test that passed before the PR and fails with it, with its error message and
+   screens. Each item makes the run fail.
+3. **What changed on the device**: each screen that is different, before and after. The change is
+   marked in red. A change does not make the run fail. Make sure that each change is what the PR
+   intends.
+4. **To do after merge**: for example, approve new screens with `e2e.py promote`.
+5. **What was tested**: the scenarios and tests that ran, and changed code that no scenario runs.
 
-- **Changed units**: screens that are different after the change.
-- **Expectation failures**: screens that are different from the approved screens. After the PR is
-  merged, a maintainer approves the new screens with `e2e.py promote`.
-- **Unreached changed functions**: changed firmware code that no scenario runs. Add a scenario.
+Collapsed at the end: problems that were there before the PR, and the run details.
+
+To mark the screen changes that the PR intends, add this block to the PR description. The report
+then marks each change as *Expected* or *Not expected*.
+
+```
+<!-- e2e
+expect: btc-vector/*fee*
+-->
+```
 
 ## More documentation
 

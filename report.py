@@ -1,8 +1,10 @@
-"""Report building blocks shared by every flow: screen and frame diffs, pixel diffs, Markdown to a
-self-contained HTML page."""
+"""The report shared by every flow: screen and frame diffs, pixel diffs, and the page itself
+(render: report.html and summary.md from one `findings` dict). wc/flow.py still renders Markdown to
+HTML with md_to_html."""
 
 import base64
 import difflib
+import fnmatch
 import html
 import json
 import re
@@ -96,34 +98,6 @@ def pixel_diff(a_path, b_path, out_path):
 
 
 
-def frames_md(out, base_rel, head_rel, diff_rel):
-    """Graphical frames that differ between two runs, aligned by content hash. Paths are relative
-    to `out`, which is where report.md lives. Either side may be missing (new unit, failed run)."""
-    gb, gh = out / base_rel, out / head_rel
-    all_b, all_h = ([] if not (g / "frames.json").exists() else json.loads((g / "frames.json").read_text())
-                    for g in (gb, gh))
-    fb = [f for f in all_b if f["step"] not in SETUP_STEPS]
-    fh = [f for f in all_h if f["step"] not in SETUP_STEPS]
-    md = []
-    rows = [r for r in frame_rows(fb, fh, gb, gh, out / diff_rel) if r[0] != "equal"]
-    if not rows:
-        md += [f"No change ({len(fb)} frames).", ""]
-    else:
-        md += ["| step | base | head | changed pixels |", "|---|---|---|---|"]
-        for _, a, b, d in rows:
-            step = (b or a)["step"]
-            ca = f"![]({base_rel}/{a['file']})" if a else "*(absent)*"
-            cb = f"![]({head_rel}/{b['file']})" if b else "*(absent)*"
-            cd = f"![]({d.relative_to(out)})" if d else ""
-            md.append(f"| `{step}` | {ca} | {cb} | {cd} |")
-        md += ["", f"{len(rows)} differing frame(s); {len(fb)} base / {len(fh)} head frames total.", ""]
-    for side, rel, frames in (("base", base_rel, all_b), ("head", head_rel, all_h)):
-        if frames:
-            md += [f"<details><summary>All {side} frames</summary>", ""]
-            md += [" ".join(f"![{f['step']}]({rel}/{f['file']})" for f in frames), "", "</details>", ""]
-    return md
-
-
 def fmt_ok(v):
     return "skipped" if v is None else ("pass" if v else "**FAIL**")
 
@@ -200,3 +174,370 @@ def md_to_html(out, md):
            "pre{background:#f6f8fa;padding:1em;overflow-x:auto}.add{color:#116329;background:#dafbe1}"
            ".del{color:#82071e;background:#ffebe9}.hunk{color:#8250df}")
     return f"<!doctype html><meta charset=utf-8><title>BitBox e2e diff</title><style>{css}</style>\n" + "\n".join(body)
+
+
+# --- the report page --------------------------------------------------------------------------------
+#
+# Every flow fills one `findings` dict; render() turns it into report.html (the product) and
+# summary.md (its top, for the CI run page and the PR comment). Keys, all optional but title:
+#
+#   title, repo, pr ({url, number, title, body} or None), sides ({"base": str, "head": str}),
+#   intent (intent(pr)), broke [item], changes [change], known [str], followups [str],
+#   cautions [str], tested [str], untested [str], details [(label, base, head)], notes [str]
+#   item:   {title, detail, excerpt, screens [(base screen, head screen)], compare [row], photo}
+#   change: {title, where [id], expected True|False|None, screens [(base screen, head screen)],
+#            compare [row], photo, notes [str]}   photo: screenshots, not device frames
+#   row:    {label, before, after, marked, photo}: image paths relative to the report directory, or None
+#
+# Strings are plain text, often from the code under test (test names, errors, the PR text): they
+# are escaped, only `backticks` become <code>.
+
+def load_pr_info(out):
+    p = Path(out) / "pr-info.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def intent(pr_info):
+    """The PR description's <!-- e2e ... --> block, one `key: value...` per line:
+    {"expect": [globs], "graphical": [globs], "pins": [repo=ref]}."""
+    m = re.search(r"<!--\s*e2e\b(.*?)-->", (pr_info or {}).get("body") or "", re.DOTALL)
+    out = {}
+    for line in (m[1] if m else "").splitlines():
+        key, sep, val = line.split("#", 1)[0].partition(":")
+        if sep and key.strip():
+            out[key.strip().lower()] = val.split()
+    return out
+
+
+def is_expected(ids, globs):
+    """Whether the PR lists one of ids as an expected change; None when it lists nothing."""
+    if not globs:
+        return None
+    return any(fnmatch.fnmatchcase(i, g) for i in ids for g in globs)
+
+
+def screen_changes(sb, sh):
+    """Device screens that differ, outside setup steps: (base screen or None, head screen or None)."""
+    sb, sh = ([s for s in x if s["step"] not in SETUP_STEPS] for x in (sb, sh))
+    def key(s):
+        return json.dumps([s["step"], s["kind"], s["fields"]], sort_keys=True)
+
+    pairs = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=list(map(key, sb)), b=list(map(key, sh)),
+                                                       autojunk=False).get_opcodes():
+        if tag != "equal":
+            pairs += [(sb[i1 + k] if i1 + k < i2 else None, sh[j1 + k] if j1 + k < j2 else None)
+                      for k in range(max(i2 - i1, j2 - j1))]
+    return pairs
+
+
+def screen_name(s):
+    """'screen "High fee"', or 'transaction fee screen' for a screen without a title."""
+    title = s["fields"].get("TITLE") or s["fields"].get("title")
+    if title:
+        return f'screen "{" ".join(title.split())}"'
+    return s["kind"].lower().removeprefix("confirm ") + " screen"
+
+
+def change_title(pairs):
+    """'Removed screen "High fee"' for the first two pairs of screen_changes."""
+    parts = []
+    for a, b in pairs[:2]:
+        if a and b:
+            na, nb = screen_name(a), screen_name(b)
+            parts.append(f"Changed {nb}" if na == nb else f"{na[0].upper()}{na[1:]} became {nb}")
+        else:
+            parts.append(f"Removed {screen_name(a)}" if a else f"New {screen_name(b)}")
+    more = len(pairs) - len(parts)
+    return "; ".join(parts) + (f"; {more} more" if more > 0 else "") if parts else "Screens changed"
+
+
+def merge_similar(changes):
+    """Changes with the same title (the same kind of change, e.g. another fee amount per chain) as one
+    change: the first one's evidence, the others as its variants."""
+    out = {}
+    for c in changes:
+        key = (c["title"], c.get("expected"))
+        if key in out:
+            out[key]["variants"].append(c)
+            out[key]["where"] = out[key]["where"] + (c.get("where") or [])
+        else:
+            out[key] = dict(c, where=list(c.get("where") or []), variants=[])
+    return list(out.values())
+
+
+def frame_compare(rows, out, base_rel, head_rel):
+    """frame_rows output as compare rows: the frames that differ, with their pixel diff."""
+    return [{"label": "Changed" if a and b else "Removed" if a else "Added",
+             "before": f"{base_rel}/{a['file']}" if a else None,
+             "after": f"{head_rel}/{b['file']}" if b else None,
+             "marked": str(Path(d).relative_to(out)) if d else None}
+            for tag, a, b, d in rows if tag != "equal"]
+
+
+def plural(n, word):
+    return f"{n} {word}" + ("" if n == 1 else "s")
+
+
+def headline(f):
+    broke, changes = f.get("broke") or [], f.get("changes") or []
+    top = f"Broke {plural(len(broke), 'test')}" if broke else "Nothing broke"
+    if not changes:
+        sub = "no device screen changed"
+    else:
+        exp = [c.get("expected") for c in changes]
+        if None in exp:
+            sub = f"{plural(len(changes), 'screen change')} to review"
+        else:
+            sub = f"{plural(exp.count(True), 'expected screen change')}"
+            if exp.count(False):
+                sub += f", {exp.count(False)} not listed as expected"
+    return top, sub
+
+
+CSS = """
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1b1f24;--muted:#5b6470;--line:#d9dde3;--code:#eef1f4;
+--bad:#b42318;--bad-bg:#fdecea;--ok:#1a7f37;--ok-bg:#e8f5ec;--warn:#9a6700;--warn-bg:#fff6dd;--accent:#2f6feb}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a20;--fg:#e6e8eb;--muted:#9aa3ad;
+--line:#2a2f37;--code:#232830;--bad:#ff7b72;--bad-bg:#3a1714;--ok:#56d364;--ok-bg:#12301b;
+--warn:#e3b341;--warn-bg:#33290d;--accent:#6ea8fe}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:24px 16px 64px}
+a{color:var(--accent)}
+code,pre{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);border-radius:4px}
+code{padding:1px 4px;overflow-wrap:anywhere}
+pre{padding:10px 12px;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
+.eyebrow{color:var(--muted);font-size:13px;letter-spacing:.04em;text-transform:uppercase}
+h1{font-size:26px;line-height:1.25;margin:4px 0 6px}
+h2{font-size:19px;margin:32px 0 10px}
+h3{font-size:16px;margin:0}
+.meta{color:var(--muted);font-size:14px}
+.banner{margin:20px 0;padding:16px 18px;border-radius:8px;border:1px solid}
+.banner .big{font-size:22px;font-weight:650}
+.banner.fail{background:var(--bad-bg);border-color:var(--bad);color:var(--bad)}
+.banner.pass{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+.banner .sub{color:var(--fg)}
+.callout{padding:10px 14px;border-left:4px solid var(--warn);background:var(--warn-bg);border-radius:4px;margin:10px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:12px 0}
+.card.bad{border-left:4px solid var(--bad)}
+.card-head{display:flex;gap:10px;align-items:baseline;justify-content:space-between;flex-wrap:wrap}
+.tag{font-size:12px;font-weight:600;padding:2px 8px;border-radius:99px;white-space:nowrap}
+.tag.yes{background:var(--ok-bg);color:var(--ok)}.tag.no{background:var(--bad-bg);color:var(--bad)}
+.tag.review{background:var(--warn-bg);color:var(--warn)}
+.muted,.where{color:var(--muted);font-size:14px}
+.pairs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.pairs .h{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.screen{background:var(--code);border-radius:6px;padding:8px 10px;white-space:pre-line;font-size:14px}
+.screen .kind{font-size:11px;color:var(--muted);text-transform:uppercase}
+.screen .t{font-weight:650}
+.screen .k{color:var(--muted)}
+.absent{color:var(--muted);font-style:italic;padding:8px 10px;border:1px dashed var(--line);border-radius:6px;text-align:center}
+.cmp{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0;align-items:start}
+.cmp .h{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.cmp.two{grid-template-columns:repeat(2,minmax(0,1fr))}
+.cmp .label{grid-column:1/-1;font-weight:600;font-size:14px;margin-top:6px}
+.cmp img{width:100%;height:auto;display:block;border-radius:4px;border:1px solid var(--line);image-rendering:pixelated}
+.cmp img.photo{image-rendering:auto}
+details{margin:10px 0}summary{cursor:pointer;font-weight:600}
+details>div{padding:4px 0 0 16px}
+table{border-collapse:collapse;font-size:14px;margin:8px 0;display:block;overflow-x:auto}
+td,th{border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}
+ul{padding-left:20px}li{margin:3px 0}
+.desc{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;white-space:pre-line;max-height:320px;overflow:auto}
+@media (max-width:640px){.screen{font-size:12px;padding:6px}}
+"""
+
+
+def render(out, f):
+    """Writes report.html, summary.md and report-files.txt (the page and every image it shows, for
+    a publish step) into out. Images outside out, or not PNG files, are left out."""
+    out = Path(out)
+    root = out.resolve()
+    shown = []
+
+    def t(s):
+        s = html.escape(str(s), quote=False)
+        s = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", s)
+        return re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+
+    def img(rel, alt, photo=False):
+        if not rel:
+            return '<div class="absent">none</div>'
+        p = (root / rel).resolve()
+        if not p.is_relative_to(root) or p.suffix != ".png" or not p.is_file():
+            return '<div class="absent">image missing</div>'
+        r = html.escape(str(p.relative_to(root)))
+        shown.append(str(p.relative_to(root)))
+        cls = ' class="photo"' if photo else ""
+        return f'<a href="{r}" target="_blank"><img src="{r}" alt="{html.escape(alt)}"{cls} loading="lazy"></a>'
+
+    def screen(s):
+        if s is None:
+            return '<div class="absent">no screen</div>'
+        fields = dict(s["fields"])
+        title = fields.pop("TITLE", None) or fields.pop("title", None)
+        body = [f'<div class="kind">{t(s["kind"])}</div>']
+        if title:
+            body.append(f'<div class="t">{t(title)}</div>')
+        body += [f'<div><span class="k">{t(k.lower())}:</span> {t(v)}</div>' for k, v in fields.items()]
+        return '<div class="screen">' + "".join(body) + "</div>"
+
+    def pairs(screens):
+        h = ['<div class="pairs"><div class="h">Device screen before</div><div class="h">After</div>']
+        for a, b in screens:
+            h += [screen(a), screen(b)]
+        return "".join(h) + "</div>"
+
+    def compare(rows, photo=False):
+        if not rows:
+            return ""
+        marked = any(r.get("marked") for r in rows)
+        heads = ('<div class="h">Before</div><div class="h">After</div>'
+                 + ('<div class="h">Change marked</div>' if marked else ""))
+        h = [f'<div class="cmp{"" if marked else " two"}">']
+        for i, r in enumerate(rows):
+            if r.get("label"):
+                h.append(f'<div class="label">{t(r["label"])}</div>')
+            if i == 0:
+                h.append(heads)
+            ph = photo or r.get("photo", False)
+            h += [img(r.get("before"), "before", ph), img(r.get("after"), "after", ph)]
+            if marked:
+                h.append(img(r["marked"], "marked", ph) if r.get("marked") else "<div></div>")
+        return "".join(h) + "</div>"
+
+    def excerpt(text):
+        lines = text.splitlines()
+        pre = f"<pre>{html.escape(text)}</pre>"
+        return pre if len(lines) <= 12 else f"<details><summary>Error output ({len(lines)} lines)</summary>{pre}</details>"
+
+    def ul(items):
+        return "<ul>" + "".join(f"<li>{t(i)}</li>" for i in items) + "</ul>"
+
+    f = dict(f, changes=merge_similar(f.get("changes") or []))
+    pr = f.get("pr")
+    top, sub = headline(f)
+    failed = bool(f.get("broke"))
+    h = ['<main><header>', f'<div class="eyebrow">BitBox e2e · {t(f.get("repo", ""))}</div>', f'<h1>{t(f["title"])}</h1>']
+    meta = []
+    if pr:
+        meta.append(f'<a href="{html.escape(pr["url"])}">{t(pr.get("repo", ""))}#{t(pr.get("number", ""))}</a>')
+    sides = f.get("sides") or {}
+    if sides:
+        meta.append(f'before: {t(sides["base"])} → after: {t(sides["head"])}')
+    h += [f'<div class="meta">{" · ".join(meta)}</div>', "</header>"]
+    known = f.get("known") or []
+    extra = f" · {plural(len(known), 'problem')} already there before this PR" if known else ""
+    h.append(f'<section class="banner {"fail" if failed else "pass"}"><div class="big">{t(top)}</div>'
+             f'<div class="sub">{t(sub[0].upper() + sub[1:])}{t(extra)}</div></section>')
+    h += [f'<div class="callout">{t(c)}</div>' for c in f.get("cautions") or []]
+
+    h.append("<h2>What this PR should change</h2>")
+    expect = (f.get("intent") or {}).get("expect")
+    if pr:
+        desc = re.sub(r"<!--.*?-->", "", pr.get("body") or "", flags=re.DOTALL).strip()
+        h.append(f'<div class="desc">{t(desc) if desc else "<i>The PR has no description.</i>"}</div>')
+    if expect:
+        h.append(f'<p>Screen changes the PR expects: {", ".join(t(f"`{g}`") for g in expect)}. '
+                 "Any other change is marked <b>not expected</b>.</p>")
+    else:
+        h.append('<p class="muted">The PR does not list the screen changes it expects, so every change below is '
+                 "marked <b>to review</b>. To list them, add <code>&lt;!-- e2e expect: &lt;scenario glob&gt; --&gt;</code> "
+                 "to the PR description.</p>")
+
+    if f.get("broke"):
+        h.append("<h2>What broke</h2><p class=muted>Each of these passed before this PR and fails with it.</p>")
+        for b in f["broke"]:
+            h.append(f'<article class="card bad"><h3>{t(b["title"])}</h3>')
+            if b.get("detail"):
+                h.append(f"<p>{t(b['detail'])}</p>")
+            if b.get("excerpt"):
+                h.append(excerpt(b["excerpt"]))
+            if b.get("screens"):
+                h.append(f"<details><summary>Device screens that differ: {len(b['screens'])}</summary>"
+                         f"{pairs(b['screens'])}</details>")
+            h.append(compare(b.get("compare"), b.get("photo", False)) + "</article>")
+
+    h.append("<h2>What changed on the device</h2>")
+    if not f.get("changes"):
+        h.append("<p>No device screen is different with this PR.</p>")
+    for c in f.get("changes") or []:
+        tag = {True: ("yes", "Expected"), False: ("no", "Not expected"), None: ("review", "To review")}[c.get("expected")]
+        h.append(f'<article class="card"><div class="card-head"><h3>{t(c["title"])}</h3>'
+                 f'<span class="tag {tag[0]}">{tag[1]}</span></div>')
+        where = c.get("where") or []
+        if where:
+            more = f" and {len(where) - 1} more" if len(where) > 1 else ""
+            h.append(f'<p class="where">In {t(f"`{where[0]}`")}{t(more)}.</p>')
+            if len(where) > 1:
+                h.append(f"<details><summary>All {len(where)}</summary><div>{ul(f'`{w}`' for w in where)}</div></details>")
+        if c.get("screens"):
+            h.append(pairs(c["screens"]))
+        h.append(compare(c.get("compare"), c.get("photo", False)))
+        h += [f'<p class="muted">{t(n)}</p>' for n in c.get("notes") or []]
+        if c.get("variants"):
+            h.append(f"<details><summary>The same kind of change with other values: {len(c['variants'])} more"
+                     "</summary><div>")
+            for v in c["variants"]:
+                h.append(f'<p class="where">In {", ".join(t(f"`{w}`") for w in v.get("where") or [])}:</p>')
+                if v.get("screens"):
+                    h.append(pairs(v["screens"]))
+                h.append(compare(v.get("compare"), v.get("photo", False)))
+            h.append("</div></details>")
+        h.append("</article>")
+
+    if f.get("minor"):
+        h.append(f"<details><summary>Pixel-only differences, same screen text: {len(f['minor'])} "
+                 "(usually capture timing)</summary><div>")
+        for c in f["minor"]:
+            h.append(f'<article class="card"><h3>{t(c["title"])}</h3>{compare(c.get("compare"))}</article>')
+        h.append("</div></details>")
+    if f.get("followups"):
+        h += ["<h2>To do after merge</h2>", ul(f["followups"])]
+    h.append("<h2>What was tested</h2>" + ul(f.get("tested") or []))
+    if f.get("untested"):
+        h.append('<div class="callout"><b>Not tested by any scenario:</b>' + ul(f["untested"]) + "</div>")
+    if known:
+        h.append(f"<details><summary>Already failing before this PR: {len(known)} (not caused by it)</summary>"
+                 f"<div>{ul(known)}</div></details>")
+    if f.get("details") or f.get("notes"):
+        rows = "".join(f"<tr><th>{t(k)}</th><td>{t(b)}</td><td>{t(a)}</td></tr>" for k, b, a in f.get("details") or [])
+        h.append("<details><summary>Run details</summary><div>"
+                 + (f"<table><tr><th></th><th>Before</th><th>After</th></tr>{rows}</table>" if rows else "")
+                 + ul(f.get("notes") or []) + "</div></details>")
+    h.append("</main>")
+    title = html.escape(f"e2e: {f['title']}")
+    page = (f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" '
+            f'content="width=device-width,initial-scale=1"><title>{title}</title><style>{CSS}</style>\n'
+            + "\n".join(h) + "\n</html>\n")
+    (out / "report.html").write_text(page)
+    (out / "summary.md").write_text(summary(f))
+    (out / "report-files.txt").write_text("\n".join(["report.html", *dict.fromkeys(shown)]) + "\n")
+    return out / "report.html"
+
+
+def summary(f):
+    """Markdown for the CI run page and the PR comment: the result and one line per finding."""
+    def md(s):
+        """Text from the code under test must not become links or markup in a comment; code spans
+        stay as they are."""
+        parts = re.split(r"(`[^`]*`)", str(s))
+        return "".join(x if x.startswith("`") else re.sub(r"([\\\[\]<>!*_|#])", r"\\\1", x) for x in parts)
+
+    f = dict(f, changes=merge_similar(f.get("changes") or []))
+    top, sub = headline(f)
+    lines = [f"### {'❌' if f.get('broke') else '✅'} {top} · {sub}", ""]
+    if f.get("broke"):
+        lines += ["**What broke**", ""] + [f"- {md(b['title'])}" for b in f["broke"]] + [""]
+    if f.get("changes"):
+        lines += ["**What changed on the device**", ""]
+        for c in f["changes"]:
+            tag = {True: "expected", False: "**not expected**", None: "to review"}[c.get("expected")]
+            where = c.get("where") or []
+            at = f" in `{where[0]}`" + (f" and {len(where) - 1} more" if len(where) > 1 else "") if where else ""
+            lines.append(f"- {md(c['title'])}{md(at)} ({tag})")
+        lines.append("")
+    if f.get("known"):
+        lines += [f"{plural(len(f['known']), 'problem')} already there before this PR (not caused by it): see the report.", ""]
+    return "\n".join(lines)
