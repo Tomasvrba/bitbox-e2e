@@ -48,7 +48,7 @@ export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
 
 # Node 26 (wallet-app engines: >=26.12.1 <27): setup.sh's copy, else mise's node@26, else PATH node
 # if it is 26. BITBOX_NODE_BIN is that node's bin dir, unset when there is none: the flows that need
-# node 26 (wallet-compare, wc, rabby) must refuse to run then instead of using whatever node is on PATH.
+# node 26 (app tests, wc, rabby) must refuse to run then instead of using whatever node is on PATH.
 unset BITBOX_NODE_BIN
 if [ -x "$BITBOX_E2E_TOOLS/node/bin/node" ]; then
   BITBOX_NODE_BIN="$BITBOX_E2E_TOOLS/node/bin"

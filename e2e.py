@@ -10,11 +10,10 @@
             [--pin <repo>=<ref>...] [--graphical <glob>...] [--tests <file>...] [--wc] [-j N]
   e2e.py promote <pr-out-dir> <unit-id>...                    head screens become expectations
   e2e.py device  --scenario scenarios/x.json --sim-dir <dir> --out <dir>   one scenario, one simulator
-  e2e.py wallet-compare --base <app-ref> --head <app-ref> --firmware <ref> --out <dir> <test>...
   e2e.py wc --base <app-ref> --head <app-ref> --out <dir> [--firmware <ref>]   WalletConnect flow (wc/)
   e2e.py rabby --base <fw-ref> --head <fw-ref> --out <dir> [--rabby-ref v0.94.15]  Rabby extension flow (rabby/)
 
-Simulator runs are in runs.py, report building blocks in report.py, wallet-compare in wallet_app.py.
+Simulator runs are in runs.py, report building blocks in report.py, app changes in wallet_app.py.
 """
 
 import argparse
@@ -195,13 +194,8 @@ def api_newly_failing(base_apis, head_apis, mode):
         r, b = modes.get(mode) or {}, base_suites.get(suite, {}).get(mode)
         if b is None:
             continue  # not run on base (new suite, or no firmware vectors at the merge-base)
-        # Bundles recorded before results listed passing tests only have the failing ones.
-        if "passing" in b:
-            was = {api_test_key(t, bv) for t in b["passing"]}
-            newly = [t for t in r.get("failing", []) if api_test_key(t, hv) in was]
-        else:
-            was = {api_test_key(t, bv) for t in b.get("failing", [])}
-            newly = [t for t in r.get("failing", []) if api_test_key(t, hv) not in was]
+        was = {api_test_key(t, bv) for t in b["passing"]}
+        newly = [t for t in r.get("failing", []) if api_test_key(t, hv) in was]
         if newly:
             out[suite] = newly
     return out
@@ -229,7 +223,6 @@ def unit_path(u):
 def promote_path(p):
     """Local file for a pr.json unit path; only files under this checkout's scenarios/ are written."""
     scenarios = (E2E_DIR / "scenarios").resolve()
-    # An absolute path (pr.json from before paths were relative) survives the join unchanged.
     full = (E2E_DIR / p).resolve()
     if not full.is_relative_to(scenarios) or full.suffix != ".json":
         raise ValueError(f"{p}: not a scenario file under {scenarios}")
@@ -353,8 +346,7 @@ def cmd_device_change(args, pins):
                  "simulator_version": m["simulator_version"],
                  "harness_sha": m.get("harness_sha"),
                  # Bundles recorded before revisions were: the API repos from their results, driver unknown.
-                 "revisions": m.get("revisions") or (revisions(base_apis) | {"driver bitbox-api-rs": None}
-                                                     if base_apis else {}),
+                 "revisions": m["revisions"],
                  "vectors": bundle.has_vectors(bundle.firmware_dir(fw_base))},
         "head": {"ref": args.head, "sha": head_sha, "firmware": bundle.resolve(fw_head), "simulator_version": head_version,
                  "source": read_text(head_sim / "source.txt"), "harness_sha": bundle.harness_sha(),
@@ -452,7 +444,7 @@ def pr_report(out):
         md += ["**No regressions**: every unit and API test that passed on the merge-base passes on head.", ""]
     drift = api_newly_failing(pr["base_apis"], pr["apis"], "committed") if repo == "firmware" else {}
     md += [f"Not gating, for review: {len(by['changed'])} changed and {len(by['new'])} new unit(s), "
-           f"{exp_n['fail']} expectation mismatch(es) (promote after the firmware PR merges)"
+           f"{exp_n['fail']} expectation mismatch(es) (promote after the PR merges)"
            + (f", {sum(map(len, drift.values()))} API test(s) newly failing with the API repos' committed "
               f"vectors ({', '.join(drift)}: sync their vector copies after the merge)" if drift else "") + ".", ""]
     md += ["## Summary", "",
@@ -588,12 +580,6 @@ def main():
     pm = sub.add_parser("promote")
     pm.add_argument("dir", help="e2e.py pr --out directory")
     pm.add_argument("units", nargs="+")
-    w = sub.add_parser("wallet-compare")
-    w.add_argument("--base", required=True, help="bitbox-wallet-app ref")
-    w.add_argument("--head", required=True, help="bitbox-wallet-app ref")
-    w.add_argument("--firmware", required=True, help="firmware ref (or WORKTREE) for the simulator")
-    w.add_argument("--out", required=True)
-    w.add_argument("tests", nargs="+", help="Playwright test files, relative to frontends/web")
     wc = sub.add_parser("wc", help="WalletConnect dapp -> app -> device flow, base vs head (wc/flow.py)")
     wc.add_argument("--base", required=True, help="bitbox-wallet-app ref")
     wc.add_argument("--head", required=True, help="bitbox-wallet-app ref")
@@ -627,8 +613,6 @@ def dispatch(args):
     if args.cmd == "rabby":
         from rabby import rabby_e2e
         return rabby_e2e.cmd_rabby(args)
-    if args.cmd == "wallet-compare":
-        return wallet_app.cmd_wallet_compare(args)
     if args.cmd == "device":
         ensure_driver()
         meta = cmd_device(args)

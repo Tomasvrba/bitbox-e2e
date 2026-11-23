@@ -133,13 +133,20 @@ def default_firmware_ref():
     return default_ref("firmware")
 
 
+# Bump when a bundle recorded by an older harness lacks data the current one relies on: such a
+# bundle is then recorded again instead of being read with fallbacks.
+BUNDLE_FORMAT = 2
+
+
 def read_manifest(root):
+    """The manifest of a complete bundle of the current format, else None."""
     p = Path(root) / "manifest.json"
-    return json.loads(p.read_text()) if p.exists() else None
+    m = json.loads(p.read_text()) if p.exists() else None
+    return m if m and m.get("format") == BUNDLE_FORMAT else None
 
 
 def write_manifest(root, m):
-    (Path(root) / "manifest.json").write_text(json.dumps(m, indent=2))
+    (Path(root) / "manifest.json").write_text(json.dumps(m | {"format": BUNDLE_FORMAT}, indent=2))
 
 
 def firmware_dir(ref):

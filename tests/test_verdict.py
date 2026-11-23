@@ -11,10 +11,9 @@ def suites(**by_suite):
     return {"simulator": "v", "suites": {s: {"firmware": r} for s, r in by_suite.items()}}
 
 
-def suite(passing=(), failing=(), error=None, with_passing=True):
-    r = {"passed": len(passing), "failed": len(failing), "skipped": 0, "failing": list(failing)}
-    if with_passing:
-        r["passing"] = list(passing)
+def suite(passing=(), failing=(), error=None):
+    r = {"passed": len(passing), "failed": len(failing), "skipped": 0, "failing": list(failing),
+         "passing": list(passing)}
     if error:
         r["error"] = error
     return r
@@ -62,13 +61,6 @@ def test_api_test_not_run_on_base_does_not_gate():
 def test_api_suite_error_on_head_fails_gate_even_if_base_errored():
     broken = suites(**{"api-ts": suite(error="build failed")})
     assert len(e2e.verdict({}, broken, broken)) == 1
-
-
-def test_old_base_without_passing_list_compares_failing_sets():
-    base = suites(**{"api-go": suite(failing=["old"], with_passing=False)})
-    head = suites(**{"api-go": suite(failing=["old", "b"])})
-    reasons = e2e.verdict({}, base, head)
-    assert len(reasons) == 1 and "b" in reasons[0] and "old" not in reasons[0].replace("api-go", "")
 
 
 def test_test_names_carrying_the_simulator_version_match_across_versions():

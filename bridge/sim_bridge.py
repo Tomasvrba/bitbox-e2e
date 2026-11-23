@@ -21,7 +21,6 @@ Rabby relies on that, it reconnects for every keyring operation without closing 
 
 import argparse
 import asyncio
-import json
 import struct
 import sys
 import time

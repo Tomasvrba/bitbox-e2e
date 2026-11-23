@@ -1,5 +1,4 @@
-"""`e2e.py pr --repo app` and `e2e.py wallet-compare`: the app's Playwright tests on one simulator,
-app base vs head."""
+"""`e2e.py pr --repo app`: the app's Playwright tests on one simulator, app base vs head."""
 
 import argparse
 import difflib
@@ -92,10 +91,6 @@ def run_wallet(ref, sim_dir, tests, out):
             "passed": sum(t["status"] == "passed" for t in tests_out), "total": len(tests_out)}
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     log(f"wallet {sha[:9]}: {meta['passed']}/{meta['total']} passed")
-
-
-def cmd_wallet_compare(args):
-    return compare(args.base, args.head, args.firmware, args.tests, Path(args.out))
 
 
 def compare(base, head, firmware, tests, out):

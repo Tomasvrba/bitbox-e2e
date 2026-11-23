@@ -259,9 +259,9 @@ chrome="$(compgen -G "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}/ch
 playwright="$(sed -n 's/.*"playwright": "\(.*\)".*/\1/p' "$BITBOX_E2E_DIR/rabby/package.json")"
 deps="install them as root: npx -y playwright@$playwright install-deps chromium"
 if [ -z "$chrome" ]; then
-  warn+=("wallet-compare, wc, rabby: Playwright Chromium not downloaded yet (the flows do that), its system libraries are unchecked; $deps")
+  warn+=("app tests, wc, rabby: Playwright Chromium not downloaded yet (the flows do that), its system libraries are unchecked; $deps")
 elif missing_libs="$(ldd "$chrome" | awk '/not found/ { print $1 }' | tr '\n' ' ')" && [ -n "$missing_libs" ]; then
-  warn+=("wallet-compare, wc, rabby: Chromium can't start, missing ${missing_libs}; $deps")
+  warn+=("app tests, wc, rabby: Chromium can't start, missing ${missing_libs}; $deps")
 fi
 if [ ${#warn[@]} -gt 0 ]; then
   echo "setup.sh: optional, per flow:" >&2
