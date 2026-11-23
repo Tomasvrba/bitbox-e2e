@@ -46,7 +46,9 @@ def run_wallet(ref, sim_dir, tests, out):
     shutil.copy(E2E_DIR / "wallet" / "playwright.evidence.config.ts", web)
     shutil.rmtree(web / "test-results", ignore_errors=True)
     (web / "e2e-results.json").unlink(missing_ok=True)
-    env = dict(os.environ, PLAYWRIGHT_USE_PREBUILT_WEB="1", SIMULATOR_PATH=str(Path(sim_dir) / "simulator"))
+    # The tests' helpers take GITHUB_WORKSPACE as the app's root when set; in CI it is this repo's.
+    env = dict(os.environ, PLAYWRIGHT_USE_PREBUILT_WEB="1", SIMULATOR_PATH=str(Path(sim_dir) / "simulator"),
+               GITHUB_WORKSPACE=str(web.parent.parent))
     log(f"wallet {sha[:9]}: playwright {' '.join(tests) or '(all tests)'}")
     deps = [a for d in TEST_PYTHON_DEPS for a in ("--with", d)]
     with open(out / "playwright.log", "w") as f:
@@ -138,7 +140,11 @@ def wallet_report(out):
     # Tests missing on one side were added or removed by the head ref; only passed -> not passed gates.
     regressions = [f"`{t}`: passed on base, {th[t]['status']} on head" for t, b in tb.items()
                    if b["status"] == "passed" and t in th and th[t]["status"] != "passed"]
-    md[1:1] = ["", "**Regressions**: " + ("; ".join(regressions) if regressions else "none")]
+    # A test that fails on both sides says nothing about the change, often a broken environment.
+    both = [t for t, b in tb.items() if b["status"] != "passed" and th.get(t, {}).get("status") not in (None, "passed")]
+    md[1:1] = ["", "**Regressions**: " + ("; ".join(regressions) if regressions else "none"), "",
+               *([f"**Failing on base and head**: {len(both)} test(s), which therefore do not test the change: "
+                  + ", ".join(f"`{t}`" for t in both)] if both else [])]
     for title in dict.fromkeys(list(tb) + list(th)):
         b, h = tb.get(title, {}), th.get(title, {})
         md.append(f"| `{title}` | {fmt_status(b)} | {fmt_status(h)} |")
