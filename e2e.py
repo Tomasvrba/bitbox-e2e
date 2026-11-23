@@ -176,6 +176,10 @@ def verdict(units, base_apis, head_apis, modes=("firmware",)):
     the same on both sides, so any newly failing test is the change's."""
     reasons = [f"{uid}: completed on base, fails on head" + (f" ({u['head_error']})" if u.get("head_error") else "")
                for uid, u in sorted(units.items()) if u["base_ok"] and not u["head_ok"]]
+    # A vector the device must reject (outcome invalid_input, unsupported) "fails" by design; one
+    # that was rejected on base and completes on head is the regression.
+    reasons += [f"{uid}: must be rejected ({u['outcome']}), was rejected on base, completes on head"
+                for uid, u in sorted(units.items()) if rejects(u) and u["base_ok"] is False and u["head_ok"]]
     for mode in modes:
         for suite, by_mode in head_apis["suites"].items():
             if err := by_mode.get(mode, {}).get("error"):
@@ -183,6 +187,10 @@ def verdict(units, base_apis, head_apis, modes=("firmware",)):
         reasons += [f"{suite} ({mode} vectors): newly failing on head: " + ", ".join(tests)
                     for suite, tests in api_newly_failing(base_apis, head_apis, mode).items()]
     return reasons
+
+
+def rejects(u):
+    return u.get("outcome") not in (None, "success")
 
 
 def api_newly_failing(base_apis, head_apis, mode):
@@ -368,6 +376,7 @@ def cmd_device_change(args, pins):
             "base_ok": m["units"].get(u["id"], {}).get("headless_ok"), "head_ok": head_ok[u["id"]],
             "head_error": None if head_ok[u["id"]] else unit_error(unit_dirs(u["id"])[1]),
             "graphical": u["id"] in graphical, "same_as": same_as.get(u["id"]), "expect": expectations.get(u["id"]),
+            "outcome": expect.outcome(u, head_version),
         } for u in head_units},
         "removed": sorted(set(m["units"]) - set(by_id)),
         "base_apis": base_apis,

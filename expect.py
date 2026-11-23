@@ -86,6 +86,13 @@ def in_range(exp, v):
     return (lo is None or v >= parse_version(lo)) and (hi is None or v < parse_version(hi))
 
 
+def outcome(unit, simulator_version):
+    """What a BTC vector expects of this version: "success", or a rejection ("invalid_input",
+    "unsupported"). None for units without one."""
+    v = parse_version(simulator_version)
+    return next((e.get("outcome") for e in unit.get("expect") or [] if in_range(e, v)), None)
+
+
 def check(unit, screens, simulator_version):
     v = parse_version(simulator_version)
     exp = next((e for e in unit.get("expect") or [] if in_range(e, v)), None)

@@ -96,3 +96,11 @@ def test_committed_vector_failures_gate_an_api_change_but_not_a_firmware_change(
     assert e2e.verdict({}, base, head) == []
     reasons = e2e.verdict({}, base, head, ("committed", "firmware"))
     assert len(reasons) == 1 and reasons[0].startswith("api-go (committed vectors)")
+
+
+def test_vector_that_must_be_rejected_gates_only_when_head_accepts_it():
+    rejected = dict(unit(False, False, "bitbox error: invalid input"), outcome="invalid_input")
+    assert e2e.verdict({"btc-vector/r": rejected}, CLEAN_APIS, CLEAN_APIS) == []
+    accepted = dict(unit(False, True), outcome="invalid_input")
+    reasons = e2e.verdict({"btc-vector/r": accepted}, CLEAN_APIS, CLEAN_APIS)
+    assert len(reasons) == 1 and "must be rejected" in reasons[0]
