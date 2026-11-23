@@ -65,21 +65,24 @@ source "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
 src="$BITBOX_WORKSPACE/$dir"
 [ "$repo" != firmware ] || src="${BITBOX_FIRMWARE:-$src}"
 
-# A branch of the checkout's origin first: after actions/checkout the only local branch is the
-# default one, and a stale local branch must not win over the remote's.
+# The name to pass on, so the report shows it: a branch of the checkout's origin first (after
+# actions/checkout the only local branch is the default one, and a stale local branch must not win
+# over the remote's), else the ref as given.
 resolve() {
-  git -C "$src" rev-parse -q --verify "origin/$1^{commit}" ||
-    git -C "$src" rev-parse -q --verify "$1^{commit}" ||
-    { echo "pr.sh: '$1' is neither a branch of origin nor a commit in $src" >&2; exit 2; }
+  if git -C "$src" rev-parse -q --verify "origin/$1^{commit}" >/dev/null; then echo "origin/$1"
+  elif git -C "$src" rev-parse -q --verify "$1^{commit}" >/dev/null; then echo "$1"
+  else echo "pr.sh: '$1' is neither a branch of origin nor a commit in $src" >&2; exit 2
+  fi
 }
-base_sha="$(resolve "$base")"
+base_ref="$(resolve "$base")"
 if [ -n "$head_repo" ]; then
   git -C "$src" fetch -q --no-tags "https://github.com/$head_repo.git" "$head"
-  head_sha="$(git -C "$src" rev-parse FETCH_HEAD)"
+  head_ref="${head_repo%%/*}/$head"
+  git -C "$src" update-ref "refs/remotes/$head_ref" FETCH_HEAD
 else
-  head_sha="$(resolve "$head")"
+  head_ref="$(resolve "$head")"
 fi
-echo "pr.sh: $repo base $base ($base_sha), head ${head_repo:+$head_repo }$head ($head_sha)" >&2
+echo "pr.sh: $repo base $base_ref, head $head_ref ($(git -C "$src" rev-parse "$head_ref"))" >&2
 
 "$BITBOX_E2E_DIR/setup.sh"
 # Again: env.sh only exports what exists, and node and go were not installed the first time.
@@ -93,7 +96,7 @@ if [ "$repo" = app ] || [ "$repo" = rabby ]; then
 fi
 
 rc=0
-"$BITBOX_E2E_DIR/e2e.py" pr --repo "$repo" --base "$base_sha" --head "$head_sha" --out "$out" "${extra[@]}" || rc=$?
+"$BITBOX_E2E_DIR/e2e.py" pr --repo "$repo" --base "$base_ref" --head "$head_ref" --out "$out" "${extra[@]}" || rc=$?
 
 # The top of the report (revisions, verdict, summary) on the run's page; the rest is in the artifact.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
