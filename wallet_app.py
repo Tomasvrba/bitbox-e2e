@@ -89,7 +89,7 @@ def run_wallet(ref, sim_dir, tests, out):
                     parser.feed(line, "app")
             t["screens"] = [x for x in parser.screens if x["fields"].get("TITLE") not in VOLATILE_TITLES]
     (out / "tests.json").write_text(json.dumps(tests_out, indent=2))
-    meta = {"source": f"{ref} ({sha})", "simulator": (Path(sim_dir) / "source.txt").read_text().strip(),
+    meta = {"source": sha[:9] if ref == sha else f"{ref} ({sha[:9]})", "simulator": (Path(sim_dir) / "source.txt").read_text().strip(),
             "passed": sum(t["status"] == "passed" for t in tests_out), "total": len(tests_out)}
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     log(f"wallet {sha[:9]}: {meta['passed']}/{meta['total']} passed")
@@ -117,7 +117,7 @@ def cmd_app_change(args, firmware=None):
     base = bundle.git("merge-base", bundle.resolve(args.base, "app"), head, cwd=WALLET_REPO)
     firmware = firmware or bundle.resolve(bundle.default_firmware_ref())
     out = Path(args.out)
-    rc = compare(base, head, firmware, args.tests, out)
+    rc = compare(base, args.head, firmware, args.tests, out)
     if args.wc:
         from wc import flow
         wc_rc = flow.cmd_wc(argparse.Namespace(base=base, head=head, firmware=firmware, out=str(out / "wc")))

@@ -159,7 +159,7 @@ def cmd_rabby_change(args, firmware=None):
     head = bundle.resolve(args.head, "rabby")
     base = bundle.git("merge-base", bundle.resolve(args.base, "rabby"), head, cwd=RABBY_REPO)
     firmware = firmware or bundle.resolve(bundle.default_firmware_ref())
-    return compare({"base": (firmware, base), "head": (firmware, head)}, Path(args.out))
+    return compare({"base": (firmware, base), "head": (firmware, args.head)}, Path(args.out))
 
 
 def compare(sides, out):
