@@ -18,7 +18,6 @@ Needs the public WalletConnect relay (wss://relay.walletconnect.org) and, for tr
 the app's Etherscan proxy: run in the host network namespace, not in isolated.sh.
 """
 
-import difflib
 import json
 import os
 import shutil
@@ -32,19 +31,20 @@ E2E_DIR = WC_DIR.parent
 sys.path.insert(0, str(E2E_DIR))
 
 import bundle  # noqa: E402
-import e2e  # noqa: E402
+import wallet_app  # noqa: E402
+from bundle import build_sim, log, read_text  # noqa: E402
+from report import fmt_ok, frame_rows, images_equal, md_to_html, pixel_diff, strip_ansi  # noqa: E402
+from wc.device import SETUP_STEPS  # noqa: E402
 
 TEST = "walletconnect.test.ts"
 # vite preview, servewallet, simulator (the app's simulator mode connects to 15423). Playwright
 # reuses whatever listens on 8080, so a stale server there would silently serve another ref.
 PORTS = (8080, 8082, bundle.SIM_PORT)
-# Steps whose device screens differ every run (pairing code) or that belong to no request.
-SETUP_STEPS = {"boot", "setup"}
 
 
 def ensure_dapp():
     if not (WC_DIR / "node_modules" / "@walletconnect" / "sign-client").exists():
-        e2e.log("wc: npm ci (dapp)")
+        log("wc: npm ci (dapp)")
         subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=WC_DIR, check=True, stdout=sys.stderr)
 
 
@@ -60,7 +60,7 @@ def check_ports():
 
 def run_side(ref, sim_dir, out):
     """One flow at one app ref. Evidence lands in out/{app,device}/, Playwright output alongside."""
-    sha, web = e2e.wallet_clone(ref)
+    sha, web = wallet_app.wallet_clone(ref)
     # servewallet is `go run` from the test with a startup timeout; compile it first.
     subprocess.run(["go", "build", "-o", os.devnull, "./cmd/servewallet"], cwd=web.parent.parent, check=True)
     check_ports()
@@ -72,7 +72,7 @@ def run_side(ref, sim_dir, out):
     out.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, PLAYWRIGHT_USE_PREBUILT_WEB="1", WC_OUT=str(out),
                WC_DAPP=str(WC_DIR / "dapp.mjs"), WC_DEVICE=str(WC_DIR / "device.py"), SIMULATOR_DIR=str(sim_dir))
-    e2e.log(f"wc {sha[:9]}: playwright {TEST}")
+    log(f"wc {sha[:9]}: playwright {TEST}")
     try:
         with open(out / "playwright.log", "w") as f:
             res = subprocess.run(["npx", "playwright", "test", "-c", "playwright.evidence.config.ts", f"tests/{TEST}"],
@@ -85,11 +85,11 @@ def run_side(ref, sim_dir, out):
     if (web / "e2e-results.json").exists():
         shutil.copy(web / "e2e-results.json", out / "e2e-results.json")
         error = first_error(json.loads((out / "e2e-results.json").read_text()))
-    meta = {"source": f"{ref} ({sha})", "simulator": e2e.read_text(Path(sim_dir) / "source.txt"),
-            "simulator_version": e2e.read_text(Path(sim_dir) / "version.txt"),
+    meta = {"source": f"{ref} ({sha})", "simulator": read_text(Path(sim_dir) / "source.txt"),
+            "simulator_version": read_text(Path(sim_dir) / "version.txt"),
             "passed": res.returncode == 0, "error": error}
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
-    e2e.log(f"wc {sha[:9]}: {'passed' if meta['passed'] else 'FAILED'}")
+    log(f"wc {sha[:9]}: {'passed' if meta['passed'] else 'FAILED'}")
     return meta
 
 
@@ -99,7 +99,7 @@ def first_error(results):
             for t in spec["tests"]:
                 for r in t["results"]:
                     if r.get("error"):
-                        return e2e.strip_ansi(r["error"].get("message", ""))[:2000]
+                        return strip_ansi(r["error"].get("message", ""))[:2000]
         for sub in suite.get("suites", []):
             if (m := walk(sub)):
                 return m
@@ -114,7 +114,7 @@ def cmd_wc(args):
         shutil.rmtree(out)
     out.mkdir(parents=True)
     ensure_dapp()
-    sim_dir = e2e.build_sim(args.firmware or bundle.default_firmware_ref())
+    sim_dir = build_sim(args.firmware or bundle.default_firmware_ref())
     failed = []
     for side, ref in (("base", args.base), ("head", args.head)):
         meta = run_side(ref, sim_dir, out / side)
@@ -126,7 +126,7 @@ def cmd_wc(args):
             failed.append(f"{side} ({'signer mismatch in ' + ', '.join(bad) if bad else 'playwright failed'})")
     report(out)
     if failed:
-        e2e.log(f"wc flow failed: {'; '.join(failed)}")
+        log(f"wc flow failed: {'; '.join(failed)}")
     return 1 if failed else 0
 
 
@@ -173,7 +173,7 @@ def report(out):
           f"| app | {meta['base']['source']} | {meta['head']['source']} |",
           f"| simulator | {meta['base']['simulator']} {meta['base']['simulator_version']} | "
           f"{meta['head']['simulator']} {meta['head']['simulator_version']} |",
-          f"| test | {e2e.fmt_ok(meta['base']['passed'])} | {e2e.fmt_ok(meta['head']['passed'])} |", ""]
+          f"| test | {fmt_ok(meta['base']['passed'])} | {fmt_ok(meta['head']['passed'])} |", ""]
     for side in ("base", "head"):
         if meta[side].get("error"):
             md += [f"{side} error:", "```", *meta[side]["error"].splitlines()[:15], "```", ""]
@@ -190,27 +190,19 @@ def report(out):
             ih = next((s["file"] for s in h.get("app", []) if s["label"] == label), None)
             ca = f"![](base/app/{ib})" if ib else "*(absent)*"
             ch = f"![](head/app/{ih})" if ih else "*(absent)*"
-            if ib and ih and e2e.images_equal(out / "base/app" / ib, out / "head/app" / ih):
+            if ib and ih and images_equal(out / "base/app" / ib, out / "head/app" / ih):
                 rows.append(f"| app: {label} | {ca} | {ch} | same |")
                 continue
             app_changed = True
-            d = ib and ih and e2e.pixel_diff(out / "base/app" / ib, out / "head/app" / ih, diffdir / f"app-{name}-{label}.png")
+            d = ib and ih and pixel_diff(out / "base/app" / ib, out / "head/app" / ih, diffdir / f"app-{name}-{label}.png")
             rows.append(f"| app: {label} **changed** | {ca} | {ch} | {f'![]({d.relative_to(out)})' if d else ''} |")
 
         db, dh = step_frames(fb, name), step_frames(fh, name)
         dev_changed = [f["hash"] for f in db] != [f["hash"] for f in dh]
         cb = " ".join(f"![{f['step']}](base/device/{f['file']})" for f in db) or "*(none)*"
         ch = " ".join(f"![{f['step']}](head/device/{f['file']})" for f in dh) or "*(none)*"
-        diffs = []
-        if dev_changed:
-            sm = difflib.SequenceMatcher(a=[f["hash"] for f in db], b=[f["hash"] for f in dh], autojunk=False)
-            for tag, i1, i2, j1, j2 in sm.get_opcodes():
-                for k in range(min(i2 - i1, j2 - j1) if tag == "replace" else 0):
-                    a, c = db[i1 + k], dh[j1 + k]
-                    d = e2e.pixel_diff(out / "base/device" / a["file"], out / "head/device" / c["file"],
-                                       diffdir / f"device-{name}-{a['file'][:-4]}--{c['file']}")
-                    if d:
-                        diffs.append(f"![]({d.relative_to(out)})")
+        diffs = [f"![]({d.relative_to(out)})" for *_, d in
+                 frame_rows(db, dh, out / "base/device", out / "head/device", diffdir) if d]
         rows.append(f"| device{' **changed**' if dev_changed else ''} | {cb} | {ch} | "
                     f"{' '.join(diffs) or ('same' if not dev_changed else 'frames added/removed')} |")
 
@@ -232,8 +224,8 @@ def report(out):
             md += [f"<details><summary>{side} device setup frames</summary>", "",
                    " ".join(f"![{f['step']}]({side}/device/{f['file']})" for f in setup), "", "</details>", ""]
     (out / "report.md").write_text("\n".join(md))
-    (out / "report.html").write_text(e2e.md_to_html(out, md))
-    e2e.log(f"report: {out / 'report.html'}")
+    (out / "report.html").write_text(md_to_html(out, md))
+    log(f"report: {out / 'report.html'}")
     print(out / "report.html")
 
 
@@ -250,7 +242,7 @@ def same(dirs):
         for label in dict.fromkeys(s["label"] for r in recs for s in r.get("app", [])):
             files = [next((Path(d) / "app" / s["file"] for s in r.get("app", []) if s["label"] == label), None)
                      for d, r in zip(dirs, recs)]
-            ok = all(files) and all(e2e.images_equal(files[0], f) for f in files[1:])
+            ok = all(files) and all(images_equal(files[0], f) for f in files[1:])
             app.append(f"{label}={'same' if ok else 'DIFF'}")
         seqs = [[f["hash"] for f in step_frames(frames, name)] for _, frames in runs]
         dev = "same" if all(s == seqs[0] for s in seqs) else "DIFF " + "/".join(str(len(s)) for s in seqs)
@@ -273,7 +265,7 @@ def main():
         ensure_dapp()
         out = Path(args.out)
         shutil.rmtree(out, ignore_errors=True)
-        run_side(args.ref, e2e.build_sim(args.firmware or bundle.default_firmware_ref()), out)
+        run_side(args.ref, build_sim(args.firmware or bundle.default_firmware_ref()), out)
     elif args.cmd == "same":
         same(args.dirs)
     else:

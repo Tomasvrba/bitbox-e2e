@@ -2,7 +2,7 @@
 and the firmware's BTC test vectors.
 
   units.py <firmware_dir> [ref]                       list unit ids
-  units.py <firmware_dir> [ref] --scenario <unit-id>  print its scenario (for e2e.py compare/device)
+  units.py <firmware_dir> [ref] --scenario <unit-id>  print its scenario (for e2e.py device)
 """
 
 import json

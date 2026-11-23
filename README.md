@@ -145,12 +145,10 @@ files the map has no lines for (C is not instrumented; protos, token lists, buil
 uses it, when the merge-base bundle has a map, for the unreached list only;
 it never limits which units run.
 
-## Single scenario: base vs head
+## Single scenario
 
 ```sh
-e2e/e2e.py compare --scenario e2e/scenarios/eth-erc20-unknown.json \
-  --base firmware-ref-before --head firmware-ref-after --out /tmp/e2e/erc20
-e2e/e2e.py device --scenario <json> --sim-dir <dir> --out <dir> [--no-graphical|--no-headless]
+e2e/e2e.py device --scenario <json> --sim-dir $(e2e/build-sim.sh <ref>) --out <dir> [--no-graphical|--no-headless]
 ```
 
 For ad-hoc scenarios that are not units yet (e.g. while drafting one), or a generated unit:
@@ -243,7 +241,7 @@ device, first address), sets each chain's custom RPC to a local anvil, connects 
 (`rabby/dapp/`) and sends: `personal_sign`, `eth_signTypedData_v4`, ETH and ERC-20 (USDC) transfers
 on Ethereum, `wallet_switchEthereumChain` to Arbitrum with an ETH and an ERC-20 transfer (unknown
 token on device), and to BNB Chain with a legacy (type 0) transfer. `rabby/run.py` drives the device
-with the `run_graphical` policy. Per step the report shows the Rabby approval and dapp result
+with the policy every graphical run uses (`gsim.Recorder`). Per step the report shows the Rabby approval and dapp result
 screenshots next to the device frames, base vs head, changed frames flagged with a pixel diff.
 Exits 1 when either side's flow failed, including Rabby importing an account other than the funded
 one.
@@ -326,7 +324,7 @@ and both simulators to build it takes ~35 min (v9.28.0 against a one-commit bran
 ## Harness tests
 
 ```sh
-cd e2e && uv run --no-project --with pytest pytest tests/   # no simulator needed
+cd e2e && uv run --no-project --with pytest --with pillow --with python-xlib pytest tests/   # no simulator needed
 ```
 
 ## Gotchas

@@ -28,21 +28,14 @@ E2E_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(E2E_DIR))
 
 import bundle  # noqa: E402
-
-
-def load_e2e():
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("e2e", E2E_DIR / "e2e.py")
-    m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
-    return m
+from report import SETUP_STEPS  # noqa: E402
 
 
 def one(args):
-    e2e = load_e2e()
+    import runs
     t0 = time.time()
     try:
-        ok = e2e.run_graphical(Path(args.sim_dir), Path(args.scenario), Path(args.out))
+        ok = runs.run_graphical(Path(args.sim_dir), Path(args.scenario), Path(args.out))
     except Exception as e:  # recorded as a failed run, the batch goes on
         ok = False
         print(f"[flake] {e!r}", file=sys.stderr)
@@ -65,7 +58,6 @@ def scenario_files(args):
 
 
 def batch(args):
-    e2e = load_e2e()
     out = Path(args.out)
     jobs = [(name, path, i) for name, path in scenario_files(args) for i in range(args.runs)]
     lock = threading.Lock()
@@ -103,7 +95,7 @@ def batch(args):
             times.append(res.get("seconds", 0))
             fj = run / "frames.json"
             frames = json.loads(fj.read_text()) if fj.exists() else []
-            seqs[tuple(f["hash"][:10] for f in frames if f["step"] not in e2e.SETUP_STEPS)] += 1
+            seqs[tuple(f["hash"][:10] for f in frames if f["step"] not in SETUP_STEPS)] += 1
         n = sum(seqs.values())
         top = seqs.most_common(1)[0][1] if seqs else 0
         summary[d.name] = {"runs": n, "identical": top, "variants": len(seqs), "failed": fails,

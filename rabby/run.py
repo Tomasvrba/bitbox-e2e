@@ -10,7 +10,7 @@
 Starts: graphical simulator (gsim) on its own Xvfb, sim_bridge.py on :8178, one anvil per chain, the
 API proxy (api_proxy.py, replaying fixtures/rabby-api.json.gz, or recording through --record-sock to
 a host-side proxy), the test dapp on :8080, and flow.ts with Chromium on a second Xvfb.
-The device is confirmed with the same policy as e2e.py run_graphical (tap top-right, then pinch).
+The device is recorded and confirmed by gsim.Recorder, as in every graphical run (tap top-right, then pinch).
 
 Writes to --out: frames.json + device/*.png (device frames, labelled by flow step), shots.json +
 rabby/*.png (Rabby screenshots), events.jsonl, logs.
@@ -22,7 +22,6 @@ import http.server
 import json
 import os
 import queue
-import re
 import shutil
 import signal
 import socket
@@ -144,7 +143,8 @@ def main():
     env = dict(os.environ, UV_OFFLINE="1")
     procs, cleanup = [], []
     t0 = time.time()
-    frames, events, shots = [], [], []
+    events, shots = [], []
+    rec = None
     ok = False
     error = None
     try:
@@ -158,15 +158,7 @@ def main():
         sim = gsim.GraphicalSim(str(Path(args.sim_dir) / "simulator-graphical"), xvfb.disp,
                                 str(logs / "simulator.log"), str(memdir))
         cleanup.append(sim.stop)
-        step = "boot"
-
-        def capture(h):
-            name = f"{len(frames):02d}-{re.sub(r'[^a-z0-9]+', '-', step.lower())}.png"
-            sim.lcd_image().save(out / "device" / name)
-            frames.append({"file": f"device/{name}", "step": step, "hash": h})
-
-        sim.choose_orientation()
-        capture(sim.wait_stable())
+        rec = gsim.Recorder(sim, out / "device", SETUP_STEPS, prefix="device/")
 
         procs.append(subprocess.Popen([str(E2E_DIR / "bridge" / "sim_bridge.py"), "--log", str(logs / "bridge.log")],
                                       env=env, stdout=subprocess.DEVNULL, stderr=open(logs / "bridge.err", "w")))
@@ -195,10 +187,6 @@ def main():
         q = queue.Queue()
         threading.Thread(target=pump, args=(flow.stdout, q), daemon=True).start()
 
-        # Same device policy as e2e.py run_graphical: on a new stable screen tap top-right
-        # (accept/next), then hold both sliders (hold-to-confirm). Never top-left (reject).
-        actions = [lambda: sim.tap("top", 255), sim.pinch]
-        last, tried = frames[-1]["hash"], 0
         deadline = time.time() + args.timeout
         done = False
         while time.time() < deadline:
@@ -214,7 +202,7 @@ def main():
                 ev["t"] = round(time.time() - t0, 2)
                 events.append(ev)
                 if ev.get("event") == "step-start":
-                    step = ev["step"]
+                    rec.step = ev["step"]
                     flow.stdin.write("go\n")
                     flow.stdin.flush()
                 elif ev.get("event") == "shot":
@@ -228,24 +216,15 @@ def main():
                 elif ev.get("event") == "done":
                     done = True
                     ok = "error" not in ev
-            h = sim.wait_stable(settle_s=0.5)
-            if h != last:
-                capture(h)
-                last, tried = h, 0
+            if rec.settle():
                 continue
             if done:
                 break
-            if tried < len(actions):
-                actions[tried]()
-                tried += 1
-            else:
-                time.sleep(0.1)
+            rec.act()
         else:
             log("timeout")
         flow.wait(30)
-        h = sim.wait_stable(settle_s=1.0)
-        if h != last:
-            capture(h)
+        rec.settle(1.0)
     finally:
         for pr in reversed(procs):
             if pr.poll() is None:
@@ -263,19 +242,7 @@ def main():
         shutil.rmtree(out / "fake-memory", ignore_errors=True)
         shutil.rmtree(out / "profile", ignore_errors=True)
 
-    # Idle screens between and after requests stay up for as long as the host takes, so whether one
-    # is captured is a race: drop anything also seen during setup, except the final frame (as in
-    # e2e.py run_graphical).
-    idle = {f["hash"] for f in frames if f["step"] in SETUP_STEPS}
-    if frames:
-        idle.add(frames[-1]["hash"])
-    keep = []
-    for i, f in enumerate(frames):
-        if f["step"] in SETUP_STEPS or i == len(frames) - 1 or f["hash"] not in idle:
-            keep.append(f)
-        else:
-            (out / f["file"]).unlink()
-    (out / "frames.json").write_text(json.dumps(keep, indent=2))
+    keep = rec.finish(out / "frames.json") if rec else []
     (out / "shots.json").write_text(json.dumps(shots, indent=2))
     (out / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     ok = ok and error is None

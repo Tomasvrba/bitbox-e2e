@@ -30,7 +30,7 @@ from pathlib import Path
 E2E_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(E2E_DIR))
 import bundle  # noqa: E402
-import e2e  # noqa: E402
+import runs  # noqa: E402
 import units  # noqa: E402
 
 CACHE, FW = bundle.CACHE, bundle.FW
@@ -148,7 +148,7 @@ def run_units(sim_dir, work, sha, shard, shards):
         # %c: continuous mode, counters are mmapped to the file and survive the simulator being killed.
         os.environ["LLVM_PROFILE_FILE"] = str(d / "profraw" / "%c%p.profraw")
         try:
-            ok = e2e.run_headless(sim_dir, d / "scenario.json", d / "headless")
+            ok = runs.run_headless(sim_dir, d / "scenario.json", d / "headless")
         except Exception as exc:  # noqa: BLE001 - one broken unit must not sink the map
             log(f"{unit['id']}: {exc}")
             ok = False
@@ -159,7 +159,7 @@ def cmd_map(args):
     sha = rev(args.ref)
     sim_dir = Path(subprocess.run([str(E2E_DIR / "build-sim.sh"), "--coverage", sha], check=True,
                                   stdout=subprocess.PIPE, text=True).stdout.strip().splitlines()[-1])
-    e2e.ensure_driver()
+    runs.ensure_driver()
     unit_ids = [u["id"] for u in load_units(sha)]
     work = Path(args.work or CACHE / "cov-work" / sha[:12])
     shutil.rmtree(work, ignore_errors=True)

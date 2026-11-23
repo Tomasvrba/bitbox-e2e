@@ -14,7 +14,6 @@ Builds outside the netns (Rabby, simulators, node/uv caches), runs each flow in 
 """
 
 import argparse
-import difflib
 import json
 import os
 import re
@@ -31,11 +30,12 @@ E2E_DIR = RABBY_DIR.parent
 sys.path.insert(0, str(E2E_DIR))
 
 import bundle  # noqa: E402
-import e2e  # noqa: E402  (pixel_diff, md_to_html, build_sim)
+from bundle import build_sim  # noqa: E402
+from rabby.run import SETUP_STEPS  # noqa: E402
+from report import fmt_ok, frame_rows, md_to_html  # noqa: E402
 
 RABBY_REPO = Path(os.environ.get("BITBOX_RABBY", bundle.WORKSPACE / "Rabby"))
 DEFAULT_REF = "v0.94.15"
-SETUP_STEPS = {"boot", "pairing"}
 
 
 def log(msg):
@@ -114,7 +114,7 @@ def cmd_record(args):
     browser in the netns reaches it through a unix socket (egress.py)."""
     ensure_tools()
     dist = ensure_rabby(args.rabby_ref)
-    sim_dir = e2e.build_sim(args.firmware)
+    sim_dir = build_sim(args.firmware)
     out = Path(args.out)
     port = 18089
     if not free_port(port):
@@ -146,7 +146,7 @@ def cmd_record(args):
 def cmd_rabby(args):
     ensure_tools()
     dist = ensure_rabby(args.rabby_ref)
-    sims = {side: e2e.build_sim(ref) for side, ref in (("base", args.base), ("head", args.head))}
+    sims = {side: build_sim(ref) for side, ref in (("base", args.base), ("head", args.head))}
     out = Path(args.out)
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
@@ -178,7 +178,7 @@ def frame_seq(run_dir):
 def cmd_repeat(args):
     ensure_tools()
     dist = ensure_rabby(args.rabby_ref)
-    sim_dir = e2e.build_sim(args.firmware)
+    sim_dir = build_sim(args.firmware)
     out = Path(args.out)
     shutil.rmtree(out, ignore_errors=True)
     runs = []
@@ -235,7 +235,7 @@ def report(out):
     for k, label in (("label", "firmware"), ("source", "source"), ("simulator_version", "simulator"),
                      ("rabby_ref", "Rabby"), ("seconds", "run time (s)")):
         md.append(f"| {label} | {b['meta'].get(k, '-')} | {h['meta'].get(k, '-')} |")
-    md.append(f"| flow | {e2e.fmt_ok(b['meta'].get('ok'))} | {e2e.fmt_ok(h['meta'].get('ok'))} |")
+    md.append(f"| flow | {fmt_ok(b['meta'].get('ok'))} | {fmt_ok(h['meta'].get('ok'))} |")
     md.append("")
 
     sections, summary = [], ["| step | base | head | device frames (base/head) | changed |", "|---|---|---|---|---|"]
@@ -244,20 +244,10 @@ def report(out):
         fh = [f for f in h["frames"] if f["step"] == step]
         rows, changed = [], 0
         setup = step in SETUP_STEPS
-        ops = [] if setup else difflib.SequenceMatcher(a=[f["hash"] for f in fb], b=[f["hash"] for f in fh], autojunk=False).get_opcodes()
-        for tag, i1, i2, j1, j2 in ops:
-            for k in range(max(i2 - i1, j2 - j1)):
-                fa = fb[i1 + k] if i1 + k < i2 else None
-                fc = fh[j1 + k] if j1 + k < j2 else None
-                if tag == "equal":
-                    rows.append((fa, fc, "same"))
-                    continue
-                changed += 1
-                d = None
-                if fa and fc:
-                    d = e2e.pixel_diff(out / "base" / fa["file"], out / "head" / fc["file"],
-                                       diffdir / f"{Path(fa['file']).stem}--{Path(fc['file']).name}")
-                rows.append((fa, fc, f"![]({d.relative_to(out)})" if d else "**changed**"))
+        if not setup:
+            for tag, fa, fc, d in frame_rows(fb, fh, out / "base", out / "head", diffdir):
+                changed += tag != "equal"
+                rows.append((fa, fc, "same" if tag == "equal" else f"![]({d.relative_to(out)})" if d else "**changed**"))
         retries = sum(x["results"].get(step + "#retry", 0) for x in (b, h))
         summary.append(f"| `{step}` | {b['results'].get(step, '-')} | {h['results'].get(step, '-')} | "
                        f"{len(fb)}/{len(fh)} | {'(setup, not compared)' if setup else ('**' + str(changed) + '**' if changed else '0')}"
@@ -291,7 +281,7 @@ def report(out):
         sections += sec
     md += ["## Steps", ""] + summary + [""] + sections
     (out / "report.md").write_text("\n".join(md))
-    (out / "report.html").write_text(e2e.md_to_html(out, md))
+    (out / "report.html").write_text(md_to_html(out, md))
     log(f"report: {out / 'report.html'}")
     print(out / "report.html")
 

@@ -49,6 +49,25 @@ def resolve(ref):
     return git("rev-parse", "HEAD") if ref == "WORKTREE" else git("rev-parse", "--verify", f"{ref}^{{commit}}")
 
 
+
+def read_text(p):
+    return p.read_text().strip() if p.exists() else ""
+
+
+def sim_version(sim_dir):
+    """The simulator's release name; expectations are picked by the version in it."""
+    v = read_text(Path(sim_dir) / "version.txt")
+    if not v:
+        raise RuntimeError(f"{sim_dir}/version.txt is missing or empty; rebuild it with build-sim.sh")
+    return v
+
+
+def build_sim(ref):
+    """Simulators for a firmware ref (build-sim.sh, cached by commit); returns their directory."""
+    log(f"building simulators for {ref}")
+    res = subprocess.run([str(E2E_DIR / "build-sim.sh"), ref], stdout=subprocess.PIPE, text=True, check=True)
+    return Path(res.stdout.strip().splitlines()[-1])
+
 def bundle_dir(sha):
     return CACHE / "baselines" / sha
 

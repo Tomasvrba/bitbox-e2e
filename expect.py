@@ -15,8 +15,7 @@ import sys
 from pathlib import Path
 
 import bundle
-
-SETUP_STEPS = {"boot", "connect", "pairing", "seed"}
+from report import SETUP_STEPS
 
 # Simulator screen kind -> (vector screen type, field order).
 KINDS = {

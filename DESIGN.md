@@ -50,7 +50,7 @@ Screens are the `screens.json` list `run_headless` writes (headless simulator tr
 
 ## Baseline bundle
 
-`e2e.py baseline <firmware-ref> [--graphical-units <glob>...]` writes
+`e2e.py baseline <firmware-ref> [--graphical <glob>...]` writes
 `$BITBOX_E2E_CACHE/baselines/<sha>/`:
 
 ```
@@ -98,7 +98,7 @@ bundle or to add missing base-side graphical runs.
 
 App-driven, unlike units: the BitBoxApp backend is the device host. Per app ref, Playwright runs
 `wallet/tests/walletconnect.test.ts` in the app clone; it spawns `wc/device.py` (graphical simulator,
-JSON lines on stdio: `step <name>` labels frames, auto-accepts like `run_graphical`) and
+JSON lines on stdio: `step <name>` labels frames, auto-accepts with `gsim.Recorder` like every graphical run) and
 `wc/dapp.mjs` (sign-client, JSON lines: `next` sends the next request, results carry the
 dapp-side signer check). Evidence per side: `app/steps.json` + PNGs, `device/frames.json` + PNGs.
 The report aligns them by step name.

@@ -7,11 +7,14 @@ test/simulator-graphical/src/main.rs; update them together.
 """
 
 import hashlib
+import json
 import os
+import re
 import select
 import socket
 import subprocess
 import time
+from pathlib import Path
 
 from PIL import Image
 from Xlib import X, display as xdisplay
@@ -199,3 +202,67 @@ class GraphicalSim:
             elif time.time() - since >= settle_s:
                 return h
         return last
+
+
+class Recorder:
+    """Records a run on the graphical simulator and advances the device. Finishes the orientation
+    screen, then saves every new stable LCD screen to `out` as a PNG labelled with `step`.
+
+    Policy for a screen that stays unchanged: tap the top-right control (accept/next), then the
+    hold-to-confirm gesture. Never top-left, which rejects. `setup_steps` are the steps before the
+    requests under test (unlock, a random pairing code, idle screens); `prefix` goes in front of
+    the file names in the frame list."""
+
+    def __init__(self, sim, out, setup_steps, prefix=""):
+        self.sim, self.out, self.setup_steps, self.prefix = sim, Path(out), setup_steps, prefix
+        self.frames, self.step, self.last, self.tried = [], "boot", None, 0
+        self.actions = [lambda: sim.tap("top", 255), sim.pinch]
+        sim.choose_orientation()
+        self.capture(sim.wait_stable())
+
+    def capture(self, h):
+        name = f"{len(self.frames):02d}-{re.sub(r'[^a-z0-9]+', '-', self.step.lower())}.png"
+        self.sim.lcd_image().save(self.out / name)
+        self.frames.append({"file": self.prefix + name, "step": self.step, "hash": h})
+        self.last, self.tried = h, 0
+
+    def settle(self, settle_s=0.5):
+        """Waits for a stable screen and captures it if it is new. Returns whether it was. A new
+        screen gets a full settle period before act(): some take input only after they have been
+        up a while, e.g. the password entry ignores an immediate tap."""
+        h = self.sim.wait_stable(settle_s=settle_s)
+        if h == self.last:
+            return False
+        self.capture(h)
+        return True
+
+    def act(self):
+        """The policy's next action on the current, unchanged screen. Not on the idle screen between
+        requests: the host's next request can land while the pinch is held, and its release then
+        taps (accepts) that request's first screen before it was captured (seen in the WalletConnect
+        flow: the unusual-keypath warning missing)."""
+        idle = self.step not in self.setup_steps and any(
+            f["hash"] == self.last for f in self.frames if f["step"] in self.setup_steps)
+        if self.tried < len(self.actions) and not idle:
+            self.actions[self.tried]()
+            self.tried += 1
+        else:
+            time.sleep(0.1)  # waiting on the host, or nothing we know how to press
+
+    def finish(self, frames_json, final_is_idle=True):
+        """Drops idle screens inside request steps, writes and returns the frame list. Between two
+        requests the device shows its idle screen for as long as the host takes, so whether a step
+        captures it is a race. Idle means seen during setup and, with final_is_idle, the screen the
+        run ended on; the final frame itself stays."""
+        frames = self.frames
+        idle = {f["hash"] for f in frames if f["step"] in self.setup_steps}
+        if final_is_idle and frames:
+            idle.add(frames[-1]["hash"])
+        keep = []
+        for i, f in enumerate(frames):
+            if f["step"] in self.setup_steps or f["hash"] not in idle or (final_is_idle and i == len(frames) - 1):
+                keep.append(f)
+            else:
+                (self.out / Path(f["file"]).name).unlink()
+        Path(frames_json).write_text(json.dumps(keep, indent=2))
+        return keep
