@@ -56,23 +56,28 @@ def rabby_shots_equal(a, b, max_pixels=64):
 
 
 def ensure_rabby(ref):
-    """Unpacked chrome-mv3 build of Rabby at ref, from a --shared clone (the working checkout is
-    never touched). Cached by ref name; a build takes ~10 min."""
-    sha = subprocess.run(["git", "-C", str(RABBY_REPO), "rev-parse", "--verify", f"{ref}^{{commit}}"],
-                         stdout=subprocess.PIPE, text=True, check=True).stdout.strip()
-    src = bundle.CACHE / "src" / f"rabby-{re.sub(r'[^A-Za-z0-9._-]', '_', ref)}"
-    stamp = src / "dist" / ".e2e-built"
-    if stamp.exists() and stamp.read_text().strip() == sha:
-        return src / "dist"
+    """Unpacked chrome-mv3 build of Rabby at ref, cached by commit in rabby-dist/<sha>. All refs are
+    built in one --shared clone (the working checkout is never touched), so node_modules exists
+    once: two clones of it nearly filled a CI runner. A build takes ~10 min."""
+    sha = bundle.resolve(ref, "rabby")
+    dist = bundle.CACHE / "rabby-dist" / sha
+    if (dist / "manifest.json").exists():
+        return dist
+    src = bundle.CACHE / "src" / "rabby"
     if not (src / ".git").exists():
         subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(RABBY_REPO), str(src)], check=True)
-    subprocess.run(["git", "-C", str(src), "checkout", "-q", "--detach", sha], check=True)
+    # -f: a build rewrites tracked files (e.g. the theme it generates).
+    subprocess.run(["git", "-C", str(src), "checkout", "-q", "-f", "--detach", sha], check=True)
+    shutil.rmtree(src / "dist", ignore_errors=True)
     yarn = re.search(r"^yarnPath:\s*(\S+)", (src / ".yarnrc.yml").read_text(), re.M).group(1)
     log(f"building Rabby {ref} ({sha[:9]}) in {src}")
     for script in ("install", "build:pro"):
         subprocess.run(["node", yarn, script], cwd=src, check=True, stdout=sys.stderr)
-    stamp.write_text(sha + "\n")
-    return src / "dist"
+    tmp = dist.with_name(sha + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    shutil.copytree(src / "dist", tmp)
+    tmp.rename(dist)
+    return dist
 
 
 def ensure_tools():
