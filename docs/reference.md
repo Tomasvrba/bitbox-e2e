@@ -252,9 +252,11 @@ e2e/wc/flow.py run --ref <app-ref> --out <dir>           # one side; flow.py sam
 `eth_sendTransaction` (Arbitrum, Polygon), and verifies the signer.
 `wallet/tests/walletconnect.test.ts`, copied into the app clone, approves the session and each
 request in the app; `wc/device.py` runs the graphical simulator (preseeded) and confirms everything
-on the device. Per step the report shows the app screenshots next to the device frames, base vs
-head. Exits 1 when either side's flow failed (Playwright test failed, or a signature recovered to
-another account).
+on the device. The report (the same page as for [`pr`](#the-report)) lists each request whose
+result got worse from base to head under *What broke*, with its device frames and the app
+screenshots that differ. Device changes of transaction steps are listed as pixel-only differences
+(live gas, see below). Exits 1 when either side's flow failed (Playwright test failed, or a
+signature recovered to another account).
 
 - Runs in the host network namespace (relay, Etherscan proxy), so ports 8080/8082/15423 must be
   free. Not runnable offline or where the relay is blocked.

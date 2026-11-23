@@ -12,7 +12,7 @@ refs with one firmware simulator and reports app screenshots next to device fram
 
 --firmware defaults to master of the remote pointing at BitBoxSwiss/bitbox02-firmware (else origin).
   flow.py same <run-dir>...       which steps produced identical app screenshots / device frames
-  flow.py report <dir>            re-render report.html from <dir>/{base,head}
+  flow.py report <dir>            render report.html and summary.md again from <dir>/{base,head}
 
 Needs the public WalletConnect relay (wss://relay.walletconnect.org) and, for transactions,
 the app's Etherscan proxy: run in the host network namespace, not in isolated.sh.
@@ -31,10 +31,10 @@ E2E_DIR = WC_DIR.parent
 sys.path.insert(0, str(E2E_DIR))
 
 import bundle  # noqa: E402
+import report as report_mod  # noqa: E402
 import wallet_app  # noqa: E402
 from bundle import build_sim, log, read_text  # noqa: E402
-from report import fmt_ok, frame_rows, images_equal, md_to_html, pixel_diff, strip_ansi  # noqa: E402
-from wc.device import SETUP_STEPS  # noqa: E402
+from report import frame_rows, images_equal, strip_ansi  # noqa: E402
 
 TEST = "walletconnect.test.ts"
 # vite preview, servewallet, simulator (the app's simulator mode connects to 15423). Playwright
@@ -85,7 +85,7 @@ def run_side(ref, sim_dir, out):
     if (web / "e2e-results.json").exists():
         shutil.copy(web / "e2e-results.json", out / "e2e-results.json")
         error = first_error(json.loads((out / "e2e-results.json").read_text()))
-    meta = {"source": f"{ref} ({sha})", "simulator": read_text(Path(sim_dir) / "source.txt"),
+    meta = {"source": sha[:9] if ref == sha else f"{ref} ({sha[:9]})", "simulator": read_text(Path(sim_dir) / "source.txt"),
             "simulator_version": read_text(Path(sim_dir) / "version.txt"),
             "passed": res.returncode == 0, "error": error}
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
@@ -138,19 +138,28 @@ def load_side(d):
     return steps, frames
 
 
-def dapp_cell(rec):
+TX_METHODS = {"eth_sendTransaction", "eth_signTransaction"}
+
+
+def dapp_text(rec):
+    """What the dapp got back for one step, in words."""
     ev = (rec or {}).get("dapp")
     if not ev:
-        return "-"
+        return "no answer"
     if ev.get("event") == "session":
-        return f"session: {len(ev.get('chains') or [])} chains, {len(ev.get('methods') or [])} methods"
+        return f"session with {len(ev.get('chains') or [])} chains, {len(ev.get('methods') or [])} methods"
     if ev.get("ok"):
         chk = ev.get("check") or {}
         if "signerMatches" in chk:
-            return "signed, signer " + ("matches" if chk["signerMatches"] else "**MISMATCH**")
-        return "ok " + str(ev.get("result"))[:20]
+            return "signed by the right account" if chk["signerMatches"] else "signed by the WRONG account"
+        return "ok, " + str(ev.get("result"))[:20]
     err = ev.get("error") or {}
-    return f"**error** {err.get('code', '')} {err.get('message', '')}".replace("|", "/")[:120]
+    return f"error {err.get('code', '')} {err.get('message', '')}".strip().rstrip(".")[:160]
+
+
+def dapp_ok(rec):
+    ev = (rec or {}).get("dapp") or {}
+    return bool(ev.get("event") == "session" or (ev.get("ok") and (ev.get("check") or {}).get("signerMatches") is not False))
 
 
 def step_frames(frames, step):
@@ -158,75 +167,75 @@ def step_frames(frames, step):
 
 
 def report(out):
+    """report.render for the WalletConnect flow, app base vs head."""
     out = Path(out)
     meta = {s: json.loads((out / s / "meta.json").read_text()) for s in ("base", "head")}
     (sb, fb), (sh, fh) = load_side(out / "base"), load_side(out / "head")
     rb, rh = {r["step"]: r for r in sb}, {r["step"]: r for r in sh}
     names = list(dict.fromkeys([r["step"] for r in sb] + [r["step"] for r in sh]))
     diffdir = out / "diff"
-    diffdir.mkdir(exist_ok=True)
+    pr_info = report_mod.load_pr_info(out)
+    globs = report_mod.intent(pr_info).get("expect")
+    f = {"repo": bundle.REPOS["app"].slug, "pr": pr_info, "intent": report_mod.intent(pr_info),
+         "title": (pr_info or {}).get("title") or f"WalletConnect flow: {meta['head']['source']}",
+         "sides": {"base": f"`{meta['base']['source']}`", "head": f"`{meta['head']['source']}`"},
+         "broke": [], "changes": [], "minor": [], "known": []}
 
-    md = ["# BitBoxApp WalletConnect e2e: base vs head", "",
-          "A test dapp pairs with the app over WalletConnect and sends signing requests; the app "
-          "approves each one and the graphical simulator confirms it on device.", "",
-          "| | base | head |", "|---|---|---|",
-          f"| app | {meta['base']['source']} | {meta['head']['source']} |",
-          f"| simulator | {meta['base']['simulator']} {meta['base']['simulator_version']} | "
-          f"{meta['head']['simulator']} {meta['head']['simulator_version']} |",
-          f"| test | {fmt_ok(meta['base']['passed'])} | {fmt_ok(meta['head']['passed'])} |", ""]
-    for side in ("base", "head"):
-        if meta[side].get("error"):
-            md += [f"{side} error:", "```", *meta[side]["error"].splitlines()[:15], "```", ""]
-
-    summary = ["| step | request | base dapp | head dapp | app | device |", "|---|---|---|---|---|---|"]
-    sections = []
-    for name in names:
+    def rows(name):
         b, h = rb.get(name, {}), rh.get(name, {})
-        req = f"`{(h or b).get('method', '')}` {(h or b).get('chainId', '')}" if (h or b).get("method") else ""
-        rows, app_changed = [], False
-        labels = list(dict.fromkeys([s["label"] for s in b.get("app", [])] + [s["label"] for s in h.get("app", [])]))
-        for label in labels:
+        out_rows, app_changed = [], False
+        for label in dict.fromkeys([s["label"] for s in b.get("app", [])] + [s["label"] for s in h.get("app", [])]):
             ib = next((s["file"] for s in b.get("app", []) if s["label"] == label), None)
             ih = next((s["file"] for s in h.get("app", []) if s["label"] == label), None)
-            ca = f"![](base/app/{ib})" if ib else "*(absent)*"
-            ch = f"![](head/app/{ih})" if ih else "*(absent)*"
             if ib and ih and images_equal(out / "base/app" / ib, out / "head/app" / ih):
-                rows.append(f"| app: {label} | {ca} | {ch} | same |")
                 continue
             app_changed = True
-            d = ib and ih and pixel_diff(out / "base/app" / ib, out / "head/app" / ih, diffdir / f"app-{name}-{label}.png")
-            rows.append(f"| app: {label} **changed** | {ca} | {ch} | {f'![]({d.relative_to(out)})' if d else ''} |")
+            out_rows.append({"label": f"App: {label}", "before": f"base/app/{ib}" if ib else None,
+                             "after": f"head/app/{ih}" if ih else None, "photo": True})
+        dev = report_mod.frame_compare(frame_rows(step_frames(fb, name), step_frames(fh, name), out / "base/device",
+                                                  out / "head/device", diffdir), out, "base/device", "head/device")
+        return dev, out_rows, app_changed
 
-        db, dh = step_frames(fb, name), step_frames(fh, name)
-        dev_changed = [f["hash"] for f in db] != [f["hash"] for f in dh]
-        cb = " ".join(f"![{f['step']}](base/device/{f['file']})" for f in db) or "*(none)*"
-        ch = " ".join(f"![{f['step']}](head/device/{f['file']})" for f in dh) or "*(none)*"
-        diffs = [f"![]({d.relative_to(out)})" for *_, d in
-                 frame_rows(db, dh, out / "base/device", out / "head/device", diffdir) if d]
-        rows.append(f"| device{' **changed**' if dev_changed else ''} | {cb} | {ch} | "
-                    f"{' '.join(diffs) or ('same' if not dev_changed else 'frames added/removed')} |")
-
-        summary.append(f"| `{name}` | {req} | {dapp_cell(b)} | {dapp_cell(h)} | "
-                       f"{'**changed**' if app_changed else 'same'} | {'**changed**' if dev_changed else 'same'} |")
-        sections += [f"## `{name}` {req}", "", "| | base | head | changed pixels |", "|---|---|---|---|",
-                     f"| dapp | {dapp_cell(b)} | {dapp_cell(h)} | |", *rows, ""]
-
-    md += ["## Summary", "", *summary, "",
-           "App screenshots are compared pixel by pixel; device frames by content hash (frames that "
-           "replaced each other get a pixel diff). Device setup (unlock, pairing code) is only in the "
-           "filmstrips below. App screenshots leave out the banners (testnet, update, attestation, microSD).", "",
-           "Transaction steps take gas price and limit from the live Etherscan proxy: their Total/Fee "
-           "device screens (and fee amounts in app errors) differ between any two runs. Only a change in "
-           "the other frames, or in the frame sequence, is a real difference.", "", *sections]
-    for side, frames in (("base", fb), ("head", fh)):
-        setup = [f for f in frames if f["step"] in SETUP_STEPS]
-        if setup:
-            md += [f"<details><summary>{side} device setup frames</summary>", "",
-                   " ".join(f"![{f['step']}]({side}/device/{f['file']})" for f in setup), "", "</details>", ""]
-    (out / "report.md").write_text("\n".join(md))
-    (out / "report.html").write_text(md_to_html(out, md))
-    log(f"report: {out / 'report.html'}")
-    print(out / "report.html")
+    tested = []
+    for name in names:
+        b, h = rb.get(name), rh.get(name)
+        rec = h or b
+        what = f"`{rec['method']}` on chain {rec.get('chainId', '?')}" if rec.get("method") else f"`{name}`"
+        tested.append(f"{what}: before {dapp_text(b) if b else 'not run'}; after {dapp_text(h) if h else 'not run'}.")
+        dev, app_rows, app_changed = rows(name)
+        if dapp_ok(b) and not dapp_ok(h):
+            f["broke"].append({"title": f"WalletConnect request {what} fails",
+                               "detail": f"Before this PR the dapp got: {dapp_text(b)}. With it: {dapp_text(h)}.",
+                               "compare": dev + app_rows})
+        elif b and h and not dapp_ok(b) and not dapp_ok(h):
+            f["known"].append(f"WalletConnect request {what} fails before and after this PR: {dapp_text(h)}")
+        elif dev and rec.get("method") not in TX_METHODS:
+            f["changes"].append({"title": f"Device screens changed for WalletConnect request {what}", "where": [name],
+                                 "expected": report_mod.is_expected([name], globs), "compare": dev + app_rows})
+        elif dev or app_changed:
+            f["minor"].append({"title": f"`{name}`", "compare": dev + app_rows})
+    for side in ("base", "head"):
+        if meta[side].get("error") and not (side == "base" and meta["head"].get("error")):
+            item = {"title": f"The WalletConnect test failed {'before' if side == 'base' else 'with'} this PR",
+                    "excerpt": meta[side]["error"]}
+            if side == "head" and meta["base"]["passed"]:
+                f["broke"].append(item)
+            else:
+                f["known"].append(f"The WalletConnect test fails {'before and after' if meta['head'].get('error') else 'before'} "
+                                  f"this PR: {meta[side]['error'].splitlines()[0][:160]}")
+    f["tested"] = [
+        "A test dapp pairs with the BitBoxApp over the public WalletConnect relay and sends signing requests. "
+        "The app approves each one, and the graphical simulator confirms it on the device "
+        f"(firmware `{meta['head']['simulator'][:9]}`).",
+        "Transactions take their gas price from the live Etherscan proxy, so their fee screens differ on every "
+        "run: their differences are listed under pixel-only differences.",
+        *tested]
+    f["details"] = [("app", meta["base"]["source"], meta["head"]["source"]),
+                    ("simulator", meta["base"]["simulator_version"], meta["head"]["simulator_version"])]
+    f["notes"] = ["Logs: */playwright.log, */device.log, */dapp.log."]
+    page = report_mod.render(out, f)
+    log(f"report: {page}")
+    print(page)
 
 
 # --- determinism ------------------------------------------------------------------------------------
