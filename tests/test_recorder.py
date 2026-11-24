@@ -2,7 +2,7 @@
 
 from PIL import Image
 
-import gsim
+from bitbox_e2e import gsim
 
 
 class FakeSim:

@@ -2,7 +2,7 @@
 
 from PIL import Image
 
-import report
+from bitbox_e2e import report
 
 
 def frames(tmp_path, side, *hashes):
@@ -20,6 +20,10 @@ def test_replaced_frame_gets_a_pixel_diff_added_one_does_not(tmp_path):
     fh = frames(tmp_path, "head", "a", "bbb", "c", "dd")
     rows = report.frame_rows(fb, fh, tmp_path / "base", tmp_path / "head", tmp_path / "diff")
     got = [(tag, a and a["hash"], b and b["hash"], d is not None) for tag, a, b, d in rows]
-    assert got == [("equal", "a", "a", False), ("replace", "b", "bbb", True), ("equal", "c", "c", False),
-                   ("insert", None, "dd", False)]
+    assert got == [
+        ("equal", "a", "a", False),
+        ("replace", "b", "bbb", True),
+        ("equal", "c", "c", False),
+        ("insert", None, "dd", False),
+    ]
     assert rows[1][3].is_file()

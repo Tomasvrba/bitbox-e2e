@@ -1,6 +1,6 @@
 """A suite that ran nothing must not count as passing."""
 
-import apis
+from bitbox_e2e import apis
 
 RS_NONE = """running 0 tests
 
