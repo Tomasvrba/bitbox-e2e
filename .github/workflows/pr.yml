@@ -1,7 +1,9 @@
 name: change
 
 # Manual for now: runs one change in one repo against its merge-base and uploads the report.
-# The job is ci/pr.sh; ci/local.sh runs the same script in a container (firmware changes).
+# One job per flow of the change (e2e.py FLOWS: its own tests, then the app, WalletConnect and
+# Rabby integrations on top of it), each ci/pr.sh --flows <flow>; the report job puts their
+# directories together and renders the run's page. ci/local.sh runs pr.sh in a container.
 on:
   workflow_dispatch:
     inputs:
@@ -28,19 +30,45 @@ on:
       tests:
         description: "App change: test files to run (e.g. 'tests/watch-only.test.ts'). Empty = all."
         default: ''
-      walletconnect:
-        description: App change, also run the WalletConnect flow (needs the public relay)
-        type: boolean
-        default: false
+      flows:
+        description: "Only these flows, e.g. 'device wc' (device, app, wc, rabby). Empty = all of the change's."
+        default: ''
 
 # Code from the refs above builds and runs here: no secrets, read-only token.
 permissions:
   contents: read
 
 jobs:
-  pr:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      flows: ${{ steps.flows.outputs.flows }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: e2e
+          persist-credentials: false
+      # pr.sh checks each name; this only splits them.
+      - id: flows
+        env:
+          REPO: ${{ inputs.repo }}
+          FLOWS: ${{ inputs.flows }}
+        run: |
+          if [ -n "$FLOWS" ]; then
+            echo "flows=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1].split()))' "$FLOWS")"
+          else
+            echo "flows=$(python3 e2e/e2e.py flows "$REPO")"
+          fi >> "$GITHUB_OUTPUT"
+
+  flow:
+    needs: plan
+    name: ${{ matrix.flow }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        flow: ${{ fromJSON(needs.plan.outputs.flows) }}
     steps:
       # The harness finds its siblings next to a checkout named e2e.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,7 +83,8 @@ jobs:
           fetch-depth: 0  # merge-base of base and head
           submodules: recursive
           persist-credentials: false
-      # Full history: the API suites run from `git clone --shared` copies of these.
+      # Full history: the API suites run from `git clone --shared` copies of these, and the app and
+      # Rabby flows build the changed library at base and head.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: BitBoxSwiss/bitbox-api-rs
@@ -74,14 +103,14 @@ jobs:
           path: bitbox-api-ts
           fetch-depth: 0
           persist-credentials: false
-      - if: inputs.repo == 'app'
+      - if: inputs.repo == 'app' || matrix.flow == 'app' || matrix.flow == 'wc'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: BitBoxSwiss/bitbox-wallet-app
           path: bitbox-wallet-app
           fetch-depth: 0
           persist-credentials: false
-      - if: inputs.repo == 'rabby'
+      - if: inputs.repo == 'rabby' || matrix.flow == 'rabby'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: RabbyHub/Rabby
@@ -107,10 +136,10 @@ jobs:
           PINS: ${{ inputs.pins }}
           GRAPHICAL: ${{ inputs.graphical }}
           TESTS: ${{ inputs.tests }}
-          WC: ${{ inputs.walletconnect && '--wc' || '' }}
+          FLOW: ${{ matrix.flow }}
         run: >-
           e2e/ci/pr.sh --repo "$REPO" ${BASE:+--base "$BASE"} --head "$HEAD" ${HEAD_REPO:+--head-repo "$HEAD_REPO"}
-          --pins "$PINS" --graphical "$GRAPHICAL" --tests "$TESTS" $WC --out "$RUNNER_TEMP/report"
+          --pins "$PINS" --graphical "$GRAPHICAL" --tests "$TESTS" --flows "$FLOW" --out "$RUNNER_TEMP/report"
 
       # A runner out of disk or memory gets cancelled without a word in the log.
       - name: Disk and memory
@@ -119,6 +148,46 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
+        with:
+          name: e2e-flow-${{ matrix.flow }}
+          path: ${{ runner.temp }}/report
+          if-no-files-found: warn
+
+  # The run's page: the first flow's directory, the others' as its subdirectories (the layout
+  # e2e.py pr writes when it runs them all). Rendering only reads these files.
+  report:
+    needs: [plan, flow]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: e2e
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: e2e-flow-*
+          path: ${{ runner.temp }}/flows
+      - name: e2e.py report
+        env:
+          REPO: ${{ inputs.repo }}
+          FLOWS: ${{ needs.plan.outputs.flows }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q pillow==12.3.0 python-xlib==0.33
+          first="$(python3 e2e/e2e.py flows "$REPO" | python3 -c 'import json, sys; print(json.load(sys.stdin)[0])')"
+          out="$RUNNER_TEMP/report"
+          mkdir -p "$out"
+          for flow in $(python3 -c 'import json, sys; print(" ".join(json.loads(sys.argv[1])))' "$FLOWS"); do
+            part="$RUNNER_TEMP/flows/e2e-flow-$flow"
+            if [ "$flow" = "$first" ]; then cp -r "$part/." "$out/"
+            elif [ -d "$part/$flow" ]; then mkdir -p "$out/$flow" && cp -r "$part/$flow/." "$out/$flow/"
+            else echo "::warning::flow $flow left no results"
+            fi
+          done
+          "$RUNNER_TEMP/venv/bin/python" e2e/e2e.py report "$out"
+          cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-report
           path: ${{ runner.temp }}/report

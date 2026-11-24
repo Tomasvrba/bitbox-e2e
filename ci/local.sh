@@ -2,7 +2,10 @@
 # Run ci/pr.sh the way the workflow does, on this machine: a bare Ubuntu 24.04 container with 4 CPUs
 # and 16G (a GitHub-hosted runner), an unprivileged user with sudo, and a workspace of fresh clones.
 #
-#   ci/local.sh --base <branch|commit> --head <branch|commit> --out <dir>
+#   ci/local.sh --base <branch|commit> --head <branch|commit> --out <dir> [--flows '<flow> ...']
+#
+# A firmware change; --flows as for pr.sh, default device. The rabby flow cannot run here (it needs
+# network namespaces, see below).
 #
 # The clones come from the checkouts next to this repo instead of GitHub, so head can be a local
 # branch that is not pushed. As in CI, `origin` is BitBoxSwiss: origin/<branch> is what each checkout
@@ -16,16 +19,19 @@
 set -euo pipefail
 
 base= head= out=
+flows=device
 while [ $# -gt 0 ]; do
   case "$1" in
+    --flows) flows="${2:-}" ;;
     --base) base="${2:-}" ;;
     --head) head="${2:-}" ;;
     --out) out="${2:-}" ;;
-    *) sed -n '2,5p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,8p' "$0" >&2; exit 2 ;;
   esac
   shift 2
 done
-[ -n "$base" ] && [ -n "$head" ] && [ -n "$out" ] || { sed -n '2,5p' "$0" >&2; exit 2; }
+[ -n "$base" ] && [ -n "$head" ] && [ -n "$out" ] || { sed -n '2,8p' "$0" >&2; exit 2; }
+case " $flows " in *" rabby "*) echo "local.sh: the rabby flow needs network namespaces, which the container lacks" >&2; exit 2 ;; esac
 
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 home="${E2E_CI_HOME:-$HOME/.cache/bitbox-e2e-ci}"
@@ -45,9 +51,9 @@ EOF
 
 docker run --rm -i --cpuset-cpus 0-3 --memory 16g \
   -v "$src:/src:ro" -v "$home:/home/runner" -v "$(cd "$out" && pwd):/out" \
-  bitbox-e2e-ci bash -s -- "$base" "$head" <<'EOF'
+  bitbox-e2e-ci bash -s -- "$base" "$head" "$flows" <<'EOF'
 set -euo pipefail
-base="$1" head="$2"
+base="$1" head="$2" flows="$3"
 ws="$HOME/work"
 rm -rf "$ws"
 mkdir -p "$ws"
@@ -73,11 +79,12 @@ git -C "$ws/bitbox02-firmware" submodule update -q --init --recursive
 clone bitbox-api-rs bitbox-api-rs
 clone bitbox02-api-go bitbox02-api-go
 clone bitbox-api-ts bitbox-api-ts
+case " $flows " in *" app "*|*" wc "*) clone bitbox-wallet-app bitbox-wallet-app ;; esac
 tar -C /src --exclude=e2e/driver/target --exclude=node_modules --exclude=__pycache__ -cf - e2e | tar -C "$ws" -xf -
 
 sudo "$ws/e2e/ci/prereqs.sh"
 rc=0
-"$ws/e2e/ci/pr.sh" --base "$base" --head "$head" --out "$ws/report" || rc=$?
+"$ws/e2e/ci/pr.sh" --base "$base" --head "$head" --flows "$flows" --out "$ws/report" || rc=$?
 cp -r "$ws/report/." /out/ 2>/dev/null || true
 echo "local.sh: pr.sh exit $rc; $(du -sh "$HOME" 2>/dev/null | cut -f1) under the runner's home" >&2
 exit "$rc"

@@ -3,22 +3,22 @@
 #
 #   ci/pr.sh [--repo firmware|app|api-rs|api-go|api-ts|rabby] [--base <branch|commit>] --head <branch|commit>
 #            [--head-repo <owner>/<repo>] [--pins '<repo>=<ref> ...'] [--graphical '<glob> ...']
-#            [--tests '<file> ...'] [--wc] --out <dir>
+#            [--tests '<file> ...'] [--flows '<flow> ...'] --out <dir>
 #
 # Expects the workspace CI checks out next to this repo's checkout, which must be named e2e:
 # bitbox02-firmware (full history, submodules), bitbox-api-rs, bitbox02-api-go and bitbox-api-ts,
-# plus bitbox-wallet-app for an app change and Rabby for a Rabby change.
+# plus bitbox-wallet-app for the flows app and wc and Rabby for the flow rabby (e2e.py FLOWS).
+# --flows defaults to all of the change's flows; CI runs one per job, into the same --out layout.
 # --base defaults to the repo's default branch. --head-repo is the GitHub fork holding head;
 # without it head is looked up in the checkout.
 # Exit code is e2e.py pr's: 0 no regression, 1 regression, 2 the run itself failed.
 set -euo pipefail
 set -f  # the lists below are split on spaces; their globs are for e2e.py, not the shell
 
-usage() { sed -n '2,13p' "$0" >&2; exit 2; }
-repo=firmware base= head= head_repo= pins= graphical= tests= wc= out=
+usage() { sed -n '2,14p' "$0" >&2; exit 2; }
+repo=firmware base= head= head_repo= pins= graphical= tests= flows= out=
 while [ $# -gt 0 ]; do
   case "$1" in
-    --wc) wc=1; shift; continue ;;
     --repo) repo="${2:-}" ;;
     --base) base="${2:-}" ;;
     --head) head="${2:-}" ;;
@@ -26,6 +26,7 @@ while [ $# -gt 0 ]; do
     --pins) pins="${2:-}" ;;
     --graphical) graphical="${2:-}" ;;
     --tests) tests="${2:-}" ;;
+    --flows) flows="${2:-}" ;;
     --out) out="${2:-}" ;;
     *) usage ;;
   esac
@@ -53,12 +54,14 @@ check --base "$base" "$ref_re"
 check --head "$head" "$ref_re"
 [ -z "$head_repo" ] || check --head-repo "$head_repo" '[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+'
 extra=()
-for p in $pins; do check --pins "$p" "(firmware|api-rs|api-go|api-ts)=$ref_re"; extra+=(--pin "$p"); done
+for p in $pins; do check --pins "$p" "(firmware|app|api-rs|api-go|api-ts|rabby)=$ref_re"; extra+=(--pin "$p"); done
 for g in $graphical; do check --graphical "$g" '[A-Za-z0-9*?][A-Za-z0-9*?/._-]*'; extra+=(--graphical "$g"); done
 t=()
 for f in $tests; do check --tests "$f" '[A-Za-z0-9][A-Za-z0-9/._-]*'; t+=("$f"); done
 [ ${#t[@]} -eq 0 ] || extra+=(--tests "${t[@]}")
-[ -z "$wc" ] || extra+=(--wc)
+fl=()
+for f in $flows; do check --flows "$f" '(device|app|wc|rabby)'; fl+=("$f"); done
+[ ${#fl[@]} -eq 0 ] || extra+=(--flows "${fl[@]}")
 
 # shellcheck disable=SC1091
 source "$(dirname "${BASH_SOURCE[0]}")/../env.sh"
@@ -89,7 +92,8 @@ echo "pr.sh: $repo base $base_ref, head $head_ref ($(git -C "$src" rev-parse "$h
 # shellcheck disable=SC1091
 source "$BITBOX_E2E_DIR/env.sh"
 
-if [ "$repo" = app ] || [ "$repo" = rabby ]; then
+# Every flow but device drives a browser: all of them unless --flows says only device.
+if [ "$flows" != device ] && { [ -n "$flows" ] || [ "$repo" != api-rs ]; }; then
   # Chromium's system libraries, by the Playwright version rabby/package-lock.json pins.
   (cd "$BITBOX_E2E_DIR/rabby" && npm ci --ignore-scripts --no-audit --no-fund >&2)
   sudo env "PATH=$PATH" "$BITBOX_E2E_DIR/rabby/node_modules/.bin/playwright" install-deps chromium >&2
@@ -99,6 +103,7 @@ rc=0
 "$BITBOX_E2E_DIR/e2e.py" pr --repo "$repo" --base "$base_ref" --head "$head_ref" --out "$out" "${extra[@]}" || rc=$?
 
 # The result and one line per finding on the run's page; the report itself is in the artifact.
+# With one flow per job this is that flow's; the workflow's report job sums them up.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   if [ -f "$out/summary.md" ]; then
     cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
