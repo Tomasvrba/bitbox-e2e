@@ -358,10 +358,13 @@ def render_report(out):
         return wallet_app.wallet_report(out)
     if (out / "base" / "frames.json").exists() or (out / "head" / "frames.json").exists():
         return rabby_e2e.report(out)
-    if any((out / x).is_dir() for x in report.FLOW_DIRS):  # only integration flows ran (--flows)
-        pr_info = report.load_pr_info(out)
-        return report.render(out, {"title": (pr_info or {}).get("title") or "Integration flows",
-                                   "pr": pr_info, "intent": report.intent(pr_info)})
+    sides = next((s for x in report.FLOW_DIRS if (s := report.load_sides(out / x))), None)
+    if sides:  # only integration flows ran (--flows)
+        pr_info, c = report.load_pr_info(out), sides["changed"]
+        return report.render(out, {
+            "title": (pr_info or {}).get("title") or f"{report.REPO_NAMES[c]} {report.short_ref(sides['head'][c])}",
+            "repo": bundle.REPOS[c].slug, "sides": report.sides_header(sides), "pr": pr_info,
+            "intent": report.intent(pr_info)})
     sys.exit(f"{out}: not the --out directory of e2e.py pr")
 
 
