@@ -71,3 +71,31 @@ def test_changes_of_the_same_kind_become_one_with_variants():
     merged = report.merge_similar([a, b, c])
     assert [(m["where"], len(m["variants"])) for m in merged] == [(["eth-matrix/1-eip1559", "eth-matrix/56-eip1559"], 1),
                                                                    (["btc-vector/x"], 0)]
+
+
+def test_integration_flows_show_on_the_runs_page(tmp_path):
+    """A firmware PR that breaks WalletConnect: the run's page names the flow, its images resolve from
+    the run's directory, its changes follow the PR's expect: globs, and a flow that could not run is
+    said, not silently missing."""
+    (tmp_path / "wc" / "head").mkdir(parents=True)
+    (tmp_path / "wc" / "head" / "s.png").write_bytes(PNG)
+    report.render(tmp_path / "wc", {
+        "title": "WalletConnect: firmware abc", "scope": "a dapp signs through the BitBoxApp",
+        "broke": [{"title": "WalletConnect request `eth_sendTransaction` fails",
+                   "compare": [{"label": "App", "before": None, "after": "head/s.png"}]}],
+        "changes": [{"title": "Changed screen", "where": ["personal-sign"], "screens": [(screen("A"), screen("B"))]}]})
+    report.write_flow_error(tmp_path / "rabby", "rabby", "Traceback\nRuntimeError: yarn install failed\n")
+    pr = {"url": "https://x/1", "number": 1, "body": "<!-- e2e\nexpect: wc/personal-*\n-->"}
+    report.render(tmp_path, {"title": "fw PR", "pr": pr, "intent": report.intent(pr)})
+    page = (tmp_path / "report.html").read_text()
+    assert "WalletConnect: WalletConnect request <code>eth_sendTransaction</code> fails" in page
+    assert 'src="wc/head/s.png"' in page
+    assert "Expected" in page and "To review" not in page
+    assert "Rabby could not run" in page
+    assert '<a href="wc/report.html">' in page
+    summary = (tmp_path / "summary.md").read_text()
+    assert "❌" in summary and "WalletConnect: WalletConnect request" in summary
+    files = (tmp_path / "report-files.txt").read_text().split()
+    assert "wc/report.html" in files and "wc/head/s.png" in files
+    # findings.json is the run's own flow only: a second render must not count WalletConnect twice.
+    assert "WalletConnect request" not in (tmp_path / "findings.json").read_text()

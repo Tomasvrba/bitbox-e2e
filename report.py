@@ -98,7 +98,9 @@ def pixel_diff(a_path, b_path, out_path):
 #
 #   title, repo, pr ({url, number, title, body} or None), sides ({"base": str, "head": str}),
 #   intent (intent(pr)), broke [item], fixed [str], changes [change], known [str], followups [str],
-#   cautions [str], tested [str], untested [str], details [(label, base, head)], notes [str]
+#   cautions [str], tested [str], untested [str], details [(label, base, head)], notes [str],
+#   scope (str: what an integration flow ran, one line on the run's page),
+#   incomplete [flow name] (set by with_flows: flows that could not run)
 #   item:   {title, detail, excerpt, screens [(base screen, head screen)], compare [row], photo}
 #   change: {title, where [id], expected True|False|None, screens [(base screen, head screen)],
 #            compare [row], photo, notes [str]}   photo: screenshots, not device frames
@@ -194,9 +196,105 @@ def plural(n, word):
     return f"{n} {word}" + ("" if n == 1 else "s")
 
 
+# --- sides: which repo is at which ref before and after -------------------------------------------
+#
+# An integration flow (the app's tests, WalletConnect, Rabby) runs on top of several repos; the PR
+# changes one of them. sides.json in the flow's directory: {"changed": repo, "base": {repo: ref},
+# "head": {repo: ref}}; a ref of None means the version the app or wallet ships with.
+
+REPO_NAMES = {"firmware": "firmware", "app": "BitBoxApp", "api-rs": "bitbox-api-rs", "api-go": "bitbox02-api-go",
+              "api-ts": "bitbox-api-ts", "rabby": "Rabby"}
+SHIPPED = {"api-go": "the version the app vendors", "api-ts": "the version Rabby's lockfile pins"}
+
+
+def short_ref(ref):
+    return ref[:9] if re.fullmatch(r"[0-9a-f]{40}", ref or "") else re.sub(r"^origin/", "", ref or "-")
+
+
+def load_sides(out):
+    p = Path(out) / "sides.json"
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def ref_text(repo, ref):
+    return f"`{short_ref(ref)}`" if ref else SHIPPED.get(repo, "-")
+
+
+def sides_header(sides):
+    """findings["sides"]: the changed repo before and after."""
+    c = sides["changed"]
+    return {"base": f"{REPO_NAMES[c]} {ref_text(c, sides['base'][c])}, where the PR branched off",
+            "head": f"{REPO_NAMES[c]} {ref_text(c, sides['head'][c])}"}
+
+
+def sides_fixed(sides):
+    """'BitBoxApp `abc` and bitbox02-api-go the version the app vendors': what both sides share."""
+    parts = [f"{REPO_NAMES[r]} {ref_text(r, v)}" for r, v in sides["base"].items() if r != sides["changed"]]
+    return ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + (parts[-1] if parts else "")
+
+
+def sides_details(sides):
+    """findings["details"] rows, one per repo."""
+    return [(REPO_NAMES[r], short_ref(sides["base"][r]) if sides["base"][r] else "shipped",
+             short_ref(sides["head"][r]) if sides["head"][r] else "shipped") for r in sides["base"]]
+
+
+# --- integration flows: one page for the whole run -------------------------------------------------
+#
+# The flow of the changed repo writes its report into the run's directory; each integration flow
+# writes its own into <run>/<flow>/ (findings.json, report.html, images). The run's page shows them
+# all, each finding prefixed with its flow. A flow that could not run leaves flow-error.json.
+
+FLOW_NAMES = {"device": "Device tests", "app": "BitBoxApp tests", "wc": "WalletConnect", "rabby": "Rabby"}
+FLOW_DIRS = ("app", "wc", "rabby")
+
+
+def write_flow_error(d, flow, error):
+    Path(d).mkdir(parents=True, exist_ok=True)
+    (Path(d) / "flow-error.json").write_text(json.dumps({"flow": flow, "error": error}))
+
+
+def with_flows(out, f):
+    """f with the findings of the integration flows in out/<flow>/ added."""
+    out = Path(out)
+    f = dict(f)
+    for k in ("broke", "fixed", "changes", "minor", "known", "cautions", "tested"):
+        f[k] = list(f.get(k) or [])
+    globs = (f.get("intent") or {}).get("expect")
+    for d in (out, *(out / x for x in FLOW_DIRS)):
+        if (d / "flow-error.json").exists():
+            e = json.loads((d / "flow-error.json").read_text())
+            first = next((line for line in reversed(e["error"].splitlines()) if line.strip()), "no error message")
+            f["cautions"].append(f"{FLOW_NAMES[e['flow']]} could not run, so it tested nothing: {first[:300]}")
+            f["incomplete"] = [*(f.get("incomplete") or []), FLOW_NAMES[e["flow"]]]
+    for flow in FLOW_DIRS:
+        p = out / flow / "findings.json"
+        if not p.exists():
+            continue
+        sub, name = json.loads(p.read_text()), FLOW_NAMES[flow]
+
+        def rebase(rows, flow=flow):
+            return [dict(r, **{k: f"{flow}/{r[k]}" for k in ("before", "after", "marked") if r.get(k)}) for r in rows or []]
+
+        f["broke"] += [dict(b, title=f"{name}: {b['title']}", compare=rebase(b.get("compare"))) for b in sub.get("broke") or []]
+        f["fixed"] += [f"{name}: {x}" for x in sub.get("fixed") or []]
+        f["known"] += [f"{name}: {x}" for x in sub.get("known") or []]
+        f["cautions"] += [f"{name}: {x}" for x in sub.get("cautions") or []]
+        for c in sub.get("changes") or []:
+            where = [f"{flow}/{w}" for w in c.get("where") or []]
+            f["changes"].append(dict(c, title=f"{name}: {c['title']}", where=where, expected=is_expected(where, globs),
+                                     compare=rebase(c.get("compare"))))
+        f["minor"] += [dict(c, title=f"{name}: {c['title']}", compare=rebase(c.get("compare"))) for c in sub.get("minor") or []]
+        top, rest = headline(sub)
+        f["tested"].append(f"{name}: {sub.get('scope') or 'see its report'}. Result: {top}, {rest}. "
+                           f"Its own report: {flow}/report.html")
+    return f
+
+
 def headline(f):
-    broke, changes = f.get("broke") or [], f.get("changes") or []
-    top = f"Broke {plural(len(broke), 'test')}" if broke else "Nothing broke"
+    broke, changes, incomplete = f.get("broke") or [], f.get("changes") or [], f.get("incomplete") or []
+    top = (f"Broke {plural(len(broke), 'test')}" if broke else
+           f"Incomplete: {' and '.join(incomplete)} could not run" if incomplete else "Nothing broke")
     if not changes:
         sub = "no device screen changed"
     else:
@@ -232,6 +330,7 @@ h3{font-size:16px;margin:0}
 .banner .big{font-size:22px;font-weight:650}
 .banner.fail{background:var(--bad-bg);border-color:var(--bad);color:var(--bad)}
 .banner.pass{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+.banner.warn{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
 .banner .sub{color:var(--fg)}
 .callout{padding:10px 14px;border-left:4px solid var(--warn);background:var(--warn-bg);border-radius:4px;margin:10px 0}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:12px 0}
@@ -274,7 +373,8 @@ def render(out, f):
     def t(s):
         s = html.escape(str(s), quote=False)
         s = re.sub(r"\*\*([^*\n]+)\*\*", r"<b>\1</b>", s)
-        return re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
+        return re.sub(r"\b((?:app|wc|rabby)/report\.html)\b", r'<a href="\1">\1</a>', s)
 
     def img(rel, alt, photo=False):
         if not rel:
@@ -330,10 +430,12 @@ def render(out, f):
     def ul(items):
         return "<ul>" + "".join(f"<li>{t(i)}</li>" for i in items) + "</ul>"
 
+    (out / "findings.json").write_text(json.dumps(f, indent=1))
+    f = with_flows(out, f)
     f = dict(f, changes=merge_similar(f.get("changes") or []))
     pr = f.get("pr")
     top, sub = headline(f)
-    failed = bool(f.get("broke"))
+    banner = "fail" if f.get("broke") else "warn" if f.get("incomplete") else "pass"
     h = ['<main><header>', f'<div class="eyebrow">BitBox e2e · {t(f.get("repo", ""))}</div>', f'<h1>{t(f["title"])}</h1>']
     meta = []
     if pr:
@@ -344,7 +446,7 @@ def render(out, f):
     h += [f'<div class="meta">{" · ".join(meta)}</div>', "</header>"]
     known = f.get("known") or []
     extra = f" · {plural(len(known), 'problem')} already there before this PR" if known else ""
-    h.append(f'<section class="banner {"fail" if failed else "pass"}"><div class="big">{t(top)}</div>'
+    h.append(f'<section class="banner {banner}"><div class="big">{t(top)}</div>'
              f'<div class="sub">{t(sub[0].upper() + sub[1:])}{t(extra)}</div></section>')
     h += [f'<div class="callout">{t(c)}</div>' for c in f.get("cautions") or []]
 
@@ -432,7 +534,9 @@ def render(out, f):
             + "\n".join(h) + "\n</html>\n")
     (out / "report.html").write_text(page)
     (out / "summary.md").write_text(summary(f))
-    (out / "report-files.txt").write_text("\n".join(["report.html", *dict.fromkeys(shown)]) + "\n")
+    sub_files = [f"{x}/{line}" for x in FLOW_DIRS if (out / x / "report-files.txt").exists()
+                 for line in (out / x / "report-files.txt").read_text().split()]
+    (out / "report-files.txt").write_text("\n".join(dict.fromkeys(["report.html", *shown, *sub_files])) + "\n")
     return out / "report.html"
 
 
@@ -446,7 +550,10 @@ def summary(f):
 
     f = dict(f, changes=merge_similar(f.get("changes") or []))
     top, sub = headline(f)
-    lines = [f"### {'❌' if f.get('broke') else '✅'} {top} · {sub}", ""]
+    icon = "❌" if f.get("broke") else "⚠️" if f.get("incomplete") else "✅"
+    lines = [f"### {icon} {top} · {sub}", ""]
+    if f.get("incomplete"):
+        lines += [f"- {md(c)}" for c in f.get("cautions") or [] if "could not run" in c] + [""]
     if f.get("broke"):
         lines += ["**What broke**", ""] + [f"- {md(b['title'])}" for b in f["broke"]] + [""]
     if f.get("fixed"):
