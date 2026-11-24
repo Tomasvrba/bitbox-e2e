@@ -19,13 +19,12 @@ if [ -z "${CARGO_HOME:-}" ] && [ ! -x "$HOME/.cargo/bin/rustup" ] && _r="$(comma
 fi
 unset _r
 
-# tools/bin: single binaries (uv, ast-grep) and uv-installed tools (cmake). The protoc and llvm dirs
+# tools/bin: single binaries (uv) and uv-installed tools (cmake). The protoc and llvm dirs
 # only exist when setup.sh had to download them; a missing PATH entry is harmless.
 export PATH="$BITBOX_E2E_TOOLS/bin:$BITBOX_E2E_TOOLS/llvm/bin:$BITBOX_E2E_TOOLS/protoc/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 
 # bindgen-cli loads libclang at runtime via clang-sys. setup.sh's LLVM if it downloaded one, else a
-# system LLVM 22 (apt.llvm.org's llvm-22 in the firmware dev container). The major version has to
-# match rustc's LLVM for coverage builds, which link clang's profile runtime from here.
+# system LLVM 22 (apt.llvm.org's llvm-22 in the firmware dev container).
 export LIBCLANG_PATH="$BITBOX_E2E_TOOLS/llvm/lib"
 if [ ! -x "$BITBOX_E2E_TOOLS/llvm/bin/clang" ]; then
   for _c in llvm-config-22 llvm-config; do

@@ -6,7 +6,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
 apt-get install -y -q --no-install-recommends \
-  git curl ca-certificates tar xz-utils unzip gcc g++ make pkg-config python3 coreutils binutils \
+  git curl ca-certificates tar xz-utils unzip gcc g++ make pkg-config python3 coreutils \
   util-linux iproute2 libssl-dev \
   xvfb libegl1 libgl1 libx11-xcb1 libxcursor1 libxi6 libxrender1 libxkbcommon-x11-0 libgl1-mesa-dri
 

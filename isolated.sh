@@ -5,7 +5,7 @@
 # there over the per-netns abstract socket, so runs would drive each other's displays.
 # Build outside: cargo/uv can't reach the network in here.
 #
-#   isolated.sh e2e.py device --scenario ... --out ...
+#   isolated.sh e2e device --scenario ... --out ...
 #   isolated.sh true      exits non-zero, with the reason on stderr, where namespaces are unavailable
 set -euo pipefail
 

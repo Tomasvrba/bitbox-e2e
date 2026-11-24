@@ -3,9 +3,6 @@
 #
 #   build-sim.sh <ref>        build a commit from a throwaway local clone, cached by commit sha
 #   build-sim.sh WORKTREE     build the firmware checkout as-is (uncommitted changes included)
-#   build-sim.sh --coverage <ref>
-#                             headless simulator only, Rust instrumented for source-based coverage,
-#                             cached at sims/<sha>-cov/. Run it with LLVM_PROFILE_FILE=<dir>/%c%p.profraw.
 #
 # Prints the directory holding `simulator` and `simulator-graphical` on the last stdout line.
 # Build output goes to stderr and to <dir>/build.log.
@@ -16,11 +13,10 @@ if [ "$(uname -sm)" != "Linux x86_64" ]; then
   exit 1
 fi
 
+# shellcheck disable=SC1091  # followed only with -x; env.sh is linted on its own
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 FW="${BITBOX_FIRMWARE:-$BITBOX_WORKSPACE/bitbox02-firmware}"
-COV=
-[ "${1:-}" = "--coverage" ] && { COV=1; shift; }
-REF="${1:?usage: build-sim.sh [--coverage] <ref|WORKTREE>}"
+REF="${1:?usage: build-sim.sh <ref|WORKTREE>}"
 
 # The Rust pin moved from src/rust/ to the repo root (f74c90519). Older refs kept it in src/rust/,
 # where cargo runs for simulator-graphical (from the cmake build dir) did not see it, so export it.
@@ -40,33 +36,14 @@ build() {
   export RUSTUP_TOOLCHAIN
   rustup toolchain list | grep -q "^$RUSTUP_TOOLCHAIN" ||
     rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal -c rust-src >&2
-  local bin=(simulator simulator-graphical) flags=()
-  if [ -n "$COV" ]; then
-    bin=(simulator)
-    rustup component list --installed --toolchain "$RUSTUP_TOOLCHAIN" | grep -q '^llvm-tools' ||
-      rustup component add llvm-tools --toolchain "$RUSTUP_TOOLCHAIN" >&2
-    # -Zbuild-std builds std without profiler_builtins, so link LLVM's profile runtime ourselves.
-    # Its version must match rustc's LLVM (the pinned clang and rustc are both on LLVM 22).
-    # LIBCLANG_PATH is setup.sh's LLVM (release layout) or a system one (Debian layout, from
-    # libclang-rt-22-dev), see env.sh.
-    local rt
-    rt="$(compgen -G "$LIBCLANG_PATH/clang/*/lib/x86_64-unknown-linux-gnu/libclang_rt.profile.a" ||
-      compgen -G "$LIBCLANG_PATH/clang/*/lib/linux/libclang_rt.profile-x86_64.a" || true)"
-    [ -n "$rt" ] || { echo "build-sim.sh: no libclang_rt.profile in $LIBCLANG_PATH/clang (system LLVM: install libclang-rt-22-dev)" >&2; return 1; }
-    # Counter relocation enables continuous mode (%c), so profiles survive the simulator being killed.
-    export RUSTFLAGS="-C instrument-coverage -C llvm-args=-runtime-counter-relocation"
-    flags=(-DCMAKE_C_STANDARD_LIBRARIES="-Wl,-u,__llvm_profile_runtime $rt")
-    # Instrumented build scripts and proc-macros write profiles where they run; keep them out of the tree.
-    export LLVM_PROFILE_FILE="$out/.build-profraw/%p.profraw"
-  fi
+  local bin=(simulator simulator-graphical)
   (
     cd "$src"
     ./scripts/bootstrap-cargo-config >&2
-    cmake -S . -B build-e2e -DCOVERAGE=OFF -DSANITIZE_ADDRESS=OFF -DSANITIZE_UNDEFINED=OFF "${flags[@]}" >&2
+    cmake -S . -B build-e2e -DCOVERAGE=OFF -DSANITIZE_ADDRESS=OFF -DSANITIZE_UNDEFINED=OFF >&2
     make -C build-e2e -j"$(nproc)" "${bin[@]}" >&2
   ) > >(tee "$out/build.log" >&2) 2>&1
   for b in "${bin[@]}"; do cp "$src/build-e2e/bin/$b" "$out/"; done
-  rm -rf "$out/.build-profraw"
   # The release name (bitbox02-multi-v9.28.0-simulator1.0.0-linux-amd64) is the simulator version
   # everywhere downstream; without it the build is unusable, and a version.txt left behind would
   # make the next run take it from the cache.
@@ -84,7 +61,6 @@ build() {
 }
 
 if [ "$REF" = "WORKTREE" ]; then
-  [ -n "$COV" ] && { echo "--coverage needs a commit, not WORKTREE" >&2; exit 1; }
   sha="$(git -C "$FW" rev-parse HEAD)"
   out="$BITBOX_E2E_CACHE/sims/worktree"
   build "$FW" "$out"
@@ -96,14 +72,14 @@ if [ "$REF" = "WORKTREE" ]; then
 fi
 
 sha="$(git -C "$FW" rev-parse --verify "$REF^{commit}")"
-out="$BITBOX_E2E_CACHE/sims/$sha${COV:+-cov}"
-if [ -x "$out/simulator" ] && { [ -n "$COV" ] || [ -x "$out/simulator-graphical" ]; } && [ -s "$out/version.txt" ]; then
+out="$BITBOX_E2E_CACHE/sims/$sha"
+if [ -x "$out/simulator" ] && [ -x "$out/simulator-graphical" ] && [ -s "$out/version.txt" ]; then
   echo "cached: $out" >&2
   echo "$out"
   exit 0
 fi
 
-src="$BITBOX_E2E_CACHE/src/bitbox02-firmware-$sha${COV:+-cov}"
+src="$BITBOX_E2E_CACHE/src/bitbox02-firmware-$sha"
 rm -rf "$src"
 # --shared borrows objects from the local checkout: no network, and the user's repo is untouched.
 git clone -q --shared --no-checkout "$FW" "$src"

@@ -33,8 +33,6 @@ UV_SHA256=be9878e9d08ebcb621a683aba52e7fb8bbf92b2532e0d759026ffcc067673042
 CMAKE_VERSION=4.4.4
 CMAKE_WHEEL="cmake-$CMAKE_VERSION-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl"
 CMAKE_SHA256=f773a0544c66370408f451acd487c2c643b0dfebb48c5d64f3638bc1bb820238
-AST_GREP_VERSION=0.39.4
-AST_GREP_SHA256=05d48acf1d700c7592f593001854ed3d583063256aaf8a475b1b3f15a5973f29
 GO_VERSION=1.26.10
 GO_SHA256=ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5
 NODE_VERSION=26.13.0
@@ -75,7 +73,6 @@ need python3 python3
 need sha256sum coreutils
 need stdbuf coreutils
 need nice coreutils
-need c++filt binutils      # coverage.py demangles Rust symbols
 need unshare util-linux    # isolated.sh
 need ip iproute2           # isolated.sh brings up loopback in the namespace
 need Xvfb xvfb             # graphical simulator
@@ -120,7 +117,7 @@ mkdir -p "$T/bin"
 dl="$(mktemp -d "$T/dl.XXXXXX")"
 trap 'rm -rf "$dl"' EXIT
 
-# The *.py.lock script locks need uv >= 0.5.17; an older uv runs the scripts but ignores the locks.
+# uv manages the project venv (uv.lock) and cmake tool.
 if ! printf '%s\n' 0.5.17 "$(uv --version 2>/dev/null | cut -d' ' -f2)" | sort -VC; then
   step "uv $UV_VERSION"
   fetch "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-x86_64-unknown-linux-gnu.tar.gz" "$UV_SHA256" "$dl/uv.tar.gz"
@@ -132,14 +129,6 @@ if ! command -v cmake >/dev/null; then
   step "cmake $CMAKE_VERSION"
   fetch "https://files.pythonhosted.org/packages/py3/c/cmake/$CMAKE_WHEEL" "$CMAKE_SHA256" "$dl/$CMAKE_WHEEL"
   UV_TOOL_DIR="$T/uv-tools" UV_TOOL_BIN_DIR="$T/bin" uv tool install "$dl/$CMAKE_WHEEL" >&2
-fi
-
-# coverage.py parses Rust fn items with it. Not `sg`: on Debian/Ubuntu that is newgrp, so only the
-# ast-grep binary from the release zip goes onto PATH.
-if ! command -v ast-grep >/dev/null; then
-  step "ast-grep $AST_GREP_VERSION"
-  fetch "https://github.com/ast-grep/ast-grep/releases/download/$AST_GREP_VERSION/app-x86_64-unknown-linux-gnu.zip" "$AST_GREP_SHA256" "$dl/ast-grep.zip"
-  unzip -qo "$dl/ast-grep.zip" ast-grep -d "$T/bin"
 fi
 
 # api-go (lane B) and the wallet-app flows. Go before 1.21 can't fetch the toolchain go.mod asks for.
@@ -160,7 +149,7 @@ if [ -z "${BITBOX_NODE_BIN:-}" ]; then
   tar -xJf "$dl/node.tar.xz" -C "$T/node" --strip-components=1
 fi
 
-# Rabby flow only; rabby/run.py expects it at this path.
+# Rabby and WalletConnect flows (rabby/run.py and wallet/chains.py expect anvil at this path).
 if [ ! -x "$T/foundry/bin/anvil" ]; then
   step "anvil (foundry $FOUNDRY_VERSION)"
   fetch "https://github.com/foundry-rs/foundry/releases/download/v$FOUNDRY_VERSION/foundry_v${FOUNDRY_VERSION}_linux_amd64.tar.gz" "$FOUNDRY_SHA256" "$dl/foundry.tar.gz"
@@ -184,8 +173,8 @@ if [ -z "$llvm_ok" ]; then
   fetch "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/$top.tar.xz" "$LLVM_SHA256" "$dl/llvm.tar.xz"
   rm -rf "$T/llvm" "$T/llvm.tmp" && mkdir -p "$T/llvm.tmp"
   # The release tarball is ~1.9G, ~14G unpacked. Extract only libclang with clang's resource dir
-  # (headers, compiler-rt incl. the profile runtime for coverage builds) and the tools used for
-  # building and formatting, so the peak disk use is the tarball plus the final size (~1.1G).
+  # (headers, compiler-rt) and the tools used for building and formatting, so the peak disk use is
+  # the tarball plus the final size (~1.1G).
   tar -xJf "$dl/llvm.tar.xz" -C "$T/llvm.tmp" --strip-components=1 --wildcards \
     "$top/bin/"{clang,clang-"${LLVM_VERSION%%.*}",clang++,clang-cpp,clang-format,clang-tidy,git-clang-format,ld.lld,lld} \
     "$top/bin/"{llvm-ar,llvm-nm,llvm-objcopy,llvm-strip,llvm-config,llvm-cov,llvm-profdata,llvm-symbolizer} \
@@ -249,6 +238,9 @@ cargo +"$FW_RUST" install --locked --path "$FW/tools/prost-build-proto" >&2
 step "e2e driver"
 cargo build --release -q --manifest-path "$BITBOX_E2E_DIR/driver/Cargo.toml"
 
+step "python venv (uv sync)"
+(cd "$BITBOX_E2E_DIR" && uv sync --frozen >&2)
+
 # Not needed for the units: reported, setup still succeeds.
 warn=()
 if ! err="$("$BITBOX_E2E_DIR/isolated.sh" true 2>&1)"; then
@@ -268,4 +260,4 @@ if [ ${#warn[@]} -gt 0 ]; then
   printf '  %s\n' "${warn[@]}" >&2
 fi
 
-step "done; next: source e2e/env.sh, then e2e/build-sim.sh <ref> or e2e/e2e.py --help"
+step "done; next: source e2e/env.sh, then e2e/build-sim.sh <ref> or uv run --project e2e e2e --help"

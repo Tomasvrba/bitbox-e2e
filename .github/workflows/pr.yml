@@ -1,9 +1,10 @@
 name: change
 
 # Manual for now: runs one change in one repo against its merge-base and uploads the report.
-# One job per flow of the change (e2e.py FLOWS: its own tests, then the app, WalletConnect and
-# Rabby integrations on top of it), each ci/pr.sh --flows <flow>; the report job puts their
-# directories together and renders the run's page. ci/local.sh runs pr.sh in a container.
+# One job per flow of the change (bitbox_e2e.config.FLOWS: its own tests, then the app,
+# WalletConnect and Rabby integrations on top of it), each ci/pr.sh --flows <flow>; the report
+# job puts their <out>/<flow>/ directories together and renders the run's page. ci/local.sh runs
+# pr.sh in a container.
 on:
   workflow_dispatch:
     inputs:
@@ -57,7 +58,7 @@ jobs:
           if [ -n "$FLOWS" ]; then
             echo "flows=$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1].split()))' "$FLOWS")"
           else
-            echo "flows=$(python3 e2e/e2e.py flows "$REPO")"
+            echo "flows=$(python3 -c 'import json, sys; sys.path.insert(0, "e2e"); from bitbox_e2e.config import FLOWS; print(json.dumps(FLOWS[sys.argv[1]]))' "$REPO")"
           fi >> "$GITHUB_OUTPUT"
 
   flow:
@@ -121,13 +122,13 @@ jobs:
       - name: Root prerequisites
         run: sudo e2e/ci/prereqs.sh
 
-      # What setup.sh downloads (LLVM, protoc, cmocka, uv, cmake, ast-grep, node, anvil): ~2G.
+      # What setup.sh downloads (LLVM, protoc, cmocka, uv, cmake, node, anvil): ~2G.
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.local/share/bitbox-e2e/tools
           key: tools-${{ runner.os }}-${{ hashFiles('e2e/setup.sh') }}
 
-      - name: e2e.py pr
+      - name: e2e pr
         env:
           REPO: ${{ inputs.repo }}
           BASE: ${{ inputs.base }}
@@ -153,8 +154,8 @@ jobs:
           path: ${{ runner.temp }}/report
           if-no-files-found: warn
 
-  # The run's page: the first flow's directory, the others' as its subdirectories (the layout
-  # e2e.py pr writes when it runs them all). Rendering only reads these files.
+  # The run's page: every flow writes into <out>/<flow>/, so combining them is a flat copy per flow.
+  # Rendering only reads those files.
   report:
     needs: [plan, flow]
     if: ${{ !cancelled() }}
@@ -164,28 +165,31 @@ jobs:
         with:
           path: e2e
           persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: e2e-flow-*
           path: ${{ runner.temp }}/flows
-      - name: e2e.py report
+      - name: e2e report
         env:
-          REPO: ${{ inputs.repo }}
           FLOWS: ${{ needs.plan.outputs.flows }}
         run: |
-          python3 -m venv "$RUNNER_TEMP/venv"
-          "$RUNNER_TEMP/venv/bin/pip" install -q pillow==12.3.0 python-xlib==0.33
-          first="$(python3 e2e/e2e.py flows "$REPO" | python3 -c 'import json, sys; print(json.load(sys.stdin)[0])')"
+          uv sync --frozen --project e2e --no-dev
           out="$RUNNER_TEMP/report"
           mkdir -p "$out"
           for flow in $(python3 -c 'import json, sys; print(" ".join(json.loads(sys.argv[1])))' "$FLOWS"); do
-            part="$RUNNER_TEMP/flows/e2e-flow-$flow"
-            if [ "$flow" = "$first" ]; then cp -r "$part/." "$out/"
-            elif [ -d "$part/$flow" ]; then mkdir -p "$out/$flow" && cp -r "$part/$flow/." "$out/$flow/"
-            else echo "::warning::flow $flow left no results"
+            part="$RUNNER_TEMP/flows/e2e-flow-$flow/$flow"
+            mkdir -p "$out/$flow"
+            if [ -f "$part/findings.json" ] || [ -f "$part/flow-error.json" ]; then
+              cp -r "$part/." "$out/$flow/"
+            else
+              echo "::warning::flow $flow left no results"
+              python3 -c 'import json, sys; print(json.dumps({"flow": sys.argv[1], "error": "CI job produced no results; see the workflow log"}))' "$flow" > "$out/$flow/flow-error.json"
             fi
           done
-          "$RUNNER_TEMP/venv/bin/python" e2e/e2e.py report "$out"
+          uv run --project e2e --no-sync e2e report "$out"
           cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

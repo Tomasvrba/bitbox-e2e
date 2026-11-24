@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
     --out) out="${2:-}" ;;
     *) sed -n '2,8p' "$0" >&2; exit 2 ;;
   esac
-  shift 2
+  shift 2 || { sed -n '2,8p' "$0" >&2; exit 2; }
 done
 [ -n "$base" ] && [ -n "$head" ] && [ -n "$out" ] || { sed -n '2,8p' "$0" >&2; exit 2; }
 case " $flows " in *" rabby "*) echo "local.sh: the rabby flow needs network namespaces, which the container lacks" >&2; exit 2 ;; esac
@@ -80,7 +80,7 @@ clone bitbox-api-rs bitbox-api-rs
 clone bitbox02-api-go bitbox02-api-go
 clone bitbox-api-ts bitbox-api-ts
 case " $flows " in *" app "*|*" wc "*) clone bitbox-wallet-app bitbox-wallet-app ;; esac
-tar -C /src --exclude=e2e/driver/target --exclude=node_modules --exclude=__pycache__ -cf - e2e | tar -C "$ws" -xf -
+tar -C /src --exclude=e2e/driver/target --exclude=e2e/.venv --exclude=.pytest_cache --exclude=.ruff_cache --exclude=node_modules --exclude=__pycache__ -cf - e2e | tar -C "$ws" -xf -
 
 sudo "$ws/e2e/ci/prereqs.sh"
 rc=0

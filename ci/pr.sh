@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One change, as CI runs it: resolve the refs, install the toolchain, `e2e.py pr`.
+# One change, as CI runs it: resolve the refs, install the toolchain, `e2e pr`.
 #
 #   ci/pr.sh [--repo firmware|app|api-rs|api-go|api-ts|rabby] [--base <branch|commit>] --head <branch|commit>
 #            [--head-repo <owner>/<repo>] [--pins '<repo>=<ref> ...'] [--graphical '<glob> ...']
@@ -7,13 +7,13 @@
 #
 # Expects the workspace CI checks out next to this repo's checkout, which must be named e2e:
 # bitbox02-firmware (full history, submodules), bitbox-api-rs, bitbox02-api-go and bitbox-api-ts,
-# plus bitbox-wallet-app for the flows app and wc and Rabby for the flow rabby (e2e.py FLOWS).
-# --flows defaults to all of the change's flows; CI runs one per job, into the same --out layout.
+# plus bitbox-wallet-app for the flows app and wc and Rabby for the flow rabby (bitbox_e2e.config.FLOWS).
+# --flows defaults to all of the change's flows; CI runs one per job, into the same --out/<flow>/ layout.
 # --base defaults to the repo's default branch. --head-repo is the GitHub fork holding head;
 # without it head is looked up in the checkout.
-# Exit code is e2e.py pr's: 0 no regression, 1 regression, 2 the run itself failed.
+# Exit code is e2e pr's: 0 no regression, 1 regression, 2 the run itself failed.
 set -euo pipefail
-set -f  # the lists below are split on spaces; their globs are for e2e.py, not the shell
+set -f  # the lists below are split on spaces; their globs are for e2e, not the shell
 
 usage() { sed -n '2,14p' "$0" >&2; exit 2; }
 repo=firmware base= head= head_repo= pins= graphical= tests= flows= out=
@@ -45,7 +45,7 @@ case "$repo" in
 esac
 base="${base:-$branch}"
 
-# The inputs come from a workflow form or a PR: nothing that git or e2e.py could read as an option.
+# The inputs come from a workflow form or a PR: nothing that git or e2e could read as an option.
 ref_re='[A-Za-z0-9][A-Za-z0-9._/-]*'
 check() {  # <what> <value> <regex>
   [[ "$2" =~ ^$3$ ]] || { echo "pr.sh: $1 '$2' is not valid" >&2; exit 2; }
@@ -54,12 +54,16 @@ check --base "$base" "$ref_re"
 check --head "$head" "$ref_re"
 [ -z "$head_repo" ] || check --head-repo "$head_repo" '[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+'
 extra=()
+# shellcheck disable=SC2086  # intentional word splitting with set -f
 for p in $pins; do check --pins "$p" "(firmware|app|api-rs|api-go|api-ts|rabby)=$ref_re"; extra+=(--pin "$p"); done
+# shellcheck disable=SC2086
 for g in $graphical; do check --graphical "$g" '[A-Za-z0-9*?][A-Za-z0-9*?/._-]*'; extra+=(--graphical "$g"); done
 t=()
+# shellcheck disable=SC2086
 for f in $tests; do check --tests "$f" '[A-Za-z0-9][A-Za-z0-9/._-]*'; t+=("$f"); done
 [ ${#t[@]} -eq 0 ] || extra+=(--tests "${t[@]}")
 fl=()
+# shellcheck disable=SC2086
 for f in $flows; do check --flows "$f" '(device|app|wc|rabby)'; fl+=("$f"); done
 [ ${#fl[@]} -eq 0 ] || extra+=(--flows "${fl[@]}")
 
@@ -100,7 +104,7 @@ if [ "$flows" != device ] && { [ -n "$flows" ] || [ "$repo" != api-rs ]; }; then
 fi
 
 rc=0
-"$BITBOX_E2E_DIR/e2e.py" pr --repo "$repo" --base "$base_ref" --head "$head_ref" --out "$out" "${extra[@]}" || rc=$?
+uv run --project "$BITBOX_E2E_DIR" --no-sync e2e pr --repo "$repo" --base "$base_ref" --head "$head_ref" --out "$out" "${extra[@]}" || rc=$?
 
 # The result and one line per finding on the run's page; the report itself is in the artifact.
 # With one flow per job this is that flow's; the workflow's report job sums them up.
@@ -108,7 +112,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   if [ -f "$out/summary.md" ]; then
     cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
   else
-    echo "e2e.py pr wrote no report (exit $rc); see the job log." >> "$GITHUB_STEP_SUMMARY"
+    echo "e2e pr wrote no report (exit $rc); see the job log." >> "$GITHUB_STEP_SUMMARY"
   fi
 fi
 exit "$rc"
