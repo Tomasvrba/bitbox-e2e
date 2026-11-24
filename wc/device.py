@@ -1,15 +1,10 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["pillow>=10", "python-xlib>=0.33"]
-# ///
 """Graphical simulator as a long-running device for app-driven tests (the WalletConnect flow).
 
 Starts Xvfb + simulator-graphical (preseeded) and records it with gsim.Recorder, the device policy
 of every graphical run: every new stable screen is captured, then accepted (tap top-right, then
 hold-to-confirm). Never rejects. The host is whoever connects to 127.0.0.1:15423 (the app backend).
 
-  device.py --sim-dir <dir> --out <dir>
+  python wc/device.py --sim-dir <dir> --out <dir>
 
 stdin, one command per line; stdout, one JSON event per line:
   -> {"event": "ready"}                       simulator accepts clients
@@ -26,10 +21,7 @@ import shutil
 import sys
 from pathlib import Path
 
-E2E_DIR = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(E2E_DIR))
-
-import gsim  # noqa: E402
+from bitbox_e2e import gsim
 
 # Screens seen while the app connects/unlocks/pairs. Same role as SETUP_STEPS in report.py: the
 # pairing code differs every run, so these are kept out of diffs.

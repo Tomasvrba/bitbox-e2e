@@ -17,10 +17,11 @@ import time
 from pathlib import Path
 
 from PIL import Image
-from Xlib import X, display as xdisplay
+from Xlib import X
+from Xlib import display as xdisplay
 from Xlib.ext import xtest
 
-import bundle
+from bitbox_e2e import config
 
 MARGIN = 20
 PADDING_TOP_BOTTOM = 22
@@ -31,8 +32,12 @@ SCREEN_H = 64
 WIN_W = 2 * MARGIN + PADDING_LEFT + SCREEN_W + PADDING_RIGHT
 WIN_H = 2 * MARGIN + 2 * PADDING_TOP_BOTTOM + SCREEN_H
 # Device display rectangle inside the window.
-LCD_BOX = (MARGIN + PADDING_LEFT, MARGIN + PADDING_TOP_BOTTOM,
-           MARGIN + PADDING_LEFT + SCREEN_W, MARGIN + PADDING_TOP_BOTTOM + SCREEN_H)
+LCD_BOX = (
+    MARGIN + PADDING_LEFT,
+    MARGIN + PADDING_TOP_BOTTOM,
+    MARGIN + PADDING_LEFT + SCREEN_W,
+    MARGIN + PADDING_TOP_BOTTOM + SCREEN_H,
+)
 
 TOP_Y = MARGIN * 3 // 4            # inside [MARGIN/2, MARGIN)
 BOTTOM_Y = WIN_H - MARGIN * 3 // 4  # inside [H-MARGIN, H-MARGIN/2)
@@ -57,7 +62,10 @@ class Xvfb:
         r, w = os.pipe()
         self.proc = subprocess.Popen(
             ["Xvfb", "-displayfd", str(w), "-screen", "0", "640x480x24", "-nolisten", "tcp"],
-            stdout=self.log, stderr=self.log, pass_fds=(w,))
+            stdout=self.log,
+            stderr=self.log,
+            pass_fds=(w,),
+        )
         os.close(w)
         got, deadline = b"", time.time() + timeout_s
         try:
@@ -83,10 +91,14 @@ class GraphicalSim:
     def __init__(self, binary, disp, log_path, fake_memory_dir, port=None):
         """port=None: no --port, the simulator binds 15423 (all of them can, older ones only that)."""
         env = dict(os.environ, DISPLAY=disp, FAKE_MEMORY_FILEPATH=fake_memory_dir + "/fm")
-        self.port = port or bundle.SIM_PORT
+        self.port = port or config.SIM_PORT
         self.log = open(log_path, "w")
-        self.proc = subprocess.Popen([binary, "--preseed", *(["--port", str(port)] if port else [])], env=env,
-                                     stdout=self.log, stderr=self.log)
+        self.proc = subprocess.Popen(
+            [binary, "--preseed", *(["--port", str(port)] if port else [])],
+            env=env,
+            stdout=self.log,
+            stderr=self.log,
+        )
         self.d = xdisplay.Display(disp)
         self.root = self.d.screen().root
         self.move(*IDLE)
@@ -244,7 +256,8 @@ class Recorder:
         taps (accepts) that request's first screen before it was captured (seen in the WalletConnect
         flow: the unusual-keypath warning missing)."""
         idle = self.step not in self.setup_steps and any(
-            f["hash"] == self.last for f in self.frames if f["step"] in self.setup_steps)
+            f["hash"] == self.last for f in self.frames if f["step"] in self.setup_steps
+        )
         if self.tried < len(self.actions) and not idle:
             self.actions[self.tried]()
             self.tried += 1

@@ -1,8 +1,3 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["aiohttp>=3.9"]
-# ///
 """Fake BitBoxBridge in front of a BitBox02 simulator.
 
 Web wallets (Rabby via @bitboxswiss/bitbox-api `bitbox02ConnectBridge`) find the device with

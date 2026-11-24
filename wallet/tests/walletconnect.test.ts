@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-// Copied into the app clone's frontends/web/tests/ by e2e.py wc; imports resolve against the clone.
+// Copied into the app clone's frontends/web/tests/ by bitbox_e2e/flows/wc.py (e2e pr --flows wc);
+// imports resolve against the clone.
 //
 // A WalletConnect dapp (wc/dapp.mjs) pairs with the app over the public relay and sends signing
 // requests. The app approves them and the graphical simulator (wc/device.py) confirms on device.
 // Evidence goes to $WC_OUT: app/*.png + app/steps.json, device/*.png + device/frames.json.
 //
-// Env: WC_OUT, WC_DAPP (dapp.mjs), WC_DEVICE (device.py), SIMULATOR_DIR (has simulator-graphical),
+// Env: WC_OUT, WC_DAPP (dapp.mjs), WC_DEVICE (device.py), WC_PYTHON (optional: python interpreter),
+// SIMULATOR_DIR (has simulator-graphical),
 // WC_APP_CONFIG (optional: the app's config.json, e.g. its proxy setting for local chains).
 
 import { expect, type Page } from '@playwright/test';
@@ -170,8 +172,8 @@ test('WalletConnect: dapp requests confirmed on the device', async ({ page, host
       fs.mkdirSync(appFolder, { recursive: true });
       fs.copyFileSync(process.env.WC_APP_CONFIG, path.join(appFolder, 'config.json'));
     }
-    device = new LineProc('device', env('WC_DEVICE'), [
-      '--sim-dir', env('SIMULATOR_DIR'), '--out', path.join(out, 'device'),
+    device = new LineProc('device', process.env.WC_PYTHON || 'python3', [
+      env('WC_DEVICE'), '--sim-dir', env('SIMULATOR_DIR'), '--out', path.join(out, 'device'),
     ], path.join(out, 'device.log'));
     await device.next('ready', 120_000);
     servewallet = new ServeWallet(page, servewalletPort, frontendPort, host, testInfo.outputDir,

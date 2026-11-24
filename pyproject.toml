@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bitbox-e2e"
+version = "0.1.0"
+description = "BitBox02 simulator and wallet integration end-to-end tests"
+requires-python = ">=3.10"
+dependencies = [
+    "pillow>=10",
+    "python-xlib>=0.33",
+    "aiohttp>=3.9",
+    "mitmproxy==11.0.2",
+]
+
+[project.scripts]
+e2e = "bitbox_e2e.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.9",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["bitbox_e2e"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

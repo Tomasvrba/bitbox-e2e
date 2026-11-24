@@ -1,7 +1,4 @@
-#!/usr/bin/env python3
 """Lane B: run the host API simulator suites (api-go, api-rs, api-ts) against one simulator.
-
-  apis.py <sim-dir> <firmware-vectors.json> <out-dir>
 
 Each suite runs twice, from scratch clones of the sibling checkout's HEAD (or a pinned commit):
   committed  the repo's own copy of the BTC transaction vectors (drift vs. the firmware)
@@ -25,11 +22,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import bundle
-from bundle import CACHE, E2E_DIR
+from bitbox_e2e import config
+from bitbox_e2e.config import CACHE, E2E_DIR
 
 MODES = ("committed", "firmware")
-# Suite name = bundle.REPOS key; the repo's copy of the firmware's BTC transaction vectors.
+# Suite name = config.REPOS key; the repo's copy of the firmware's BTC transaction vectors.
 SUITES = {
     "api-go": "api/firmware/testdata/btc-transaction-test-vectors.json",
     "api-rs": "tests/data/btc-transaction-test-vectors.json",
@@ -39,7 +36,7 @@ RS_FEATURES = "--features=simulator,tokio"
 
 
 def log(msg):
-    print(f"[apis] {msg}", file=sys.stderr, flush=True)
+    config.log(msg, prefix="apis")
 
 
 def sh(cmd, **kw):
@@ -55,8 +52,8 @@ def release_binary(sim_dir):
 def scratch_clone(suite, mode, sha=None):
     """Persistent per-(suite, mode) clone at sha, default the sibling's HEAD, so build dirs and
     node_modules survive between runs while the two modes can build and run concurrently."""
-    src = bundle.REPOS[suite].dir
-    sha = sha or bundle.git("rev-parse", "HEAD", cwd=src)
+    src = config.REPOS[suite].dir
+    sha = sha or config.git("rev-parse", "HEAD", cwd=src)
     dst = CACHE / "src" / f"{src.name}-{mode}"
     if not (dst / ".git").exists():
         # --shared: the clone sees every object of the sibling, including fetched fork commits.
@@ -69,8 +66,12 @@ def scratch_clone(suite, mode, sha=None):
 def build(suite, clone, env):
     """Everything that may touch the network or compile, so the isolated run only executes."""
     if suite == "api-go":
-        sh(["nice", "go", "test", "-c", "-o", "firmware.test", "./api/firmware/"], cwd=clone, env=env,
-           stdout=sys.stderr)
+        sh(
+            ["nice", "go", "test", "-c", "-o", "firmware.test", "./api/firmware/"],
+            cwd=clone,
+            env=env,
+            stdout=sys.stderr,
+        )
     elif suite == "api-rs":
         # tests/util reads SIMULATOR with option_env!, i.e. at compile time; cargo tracks it, so
         # the isolated `cargo test` with the same env is a no-op build.
@@ -79,20 +80,36 @@ def build(suite, clone, env):
         lock = (clone / "package-lock.json").read_bytes()
         stamp = clone / "node_modules" / ".e2e-lock"
         if not stamp.exists() or stamp.read_bytes() != lock:
-            sh(["nice", "npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=clone, env=env, stdout=sys.stderr)
+            sh(
+                ["nice", "npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+                cwd=clone,
+                env=env,
+                stdout=sys.stderr,
+            )
             stamp.write_bytes(lock)
 
 
 def run_cmd(suite, out_json):
     if suite == "api-go":
         # Same as `go test -count=1 -run TestSimulator ./api/firmware/`, minus the build.
-        return ["sh", "-c", "cd api/firmware && exec ../../firmware.test -test.count=1 -test.v "
-                            "-test.run TestSimulator"]
+        return [
+            "sh",
+            "-c",
+            "cd api/firmware && exec ../../firmware.test -test.count=1 -test.v -test.run TestSimulator",
+        ]
     if suite == "api-rs":
         # --no-fail-fast: by default cargo stops at the first failing test binary.
         return ["cargo", "test", "--offline", "--no-fail-fast", RS_FEATURES, "--", "--test-threads", "1"]
-    return ["npx", "vitest", "run", "--project", "simulator", "--reporter=default", "--reporter=json",
-            f"--outputFile.json={out_json}"]
+    return [
+        "npx",
+        "vitest",
+        "run",
+        "--project",
+        "simulator",
+        "--reporter=default",
+        "--reporter=json",
+        f"--outputFile.json={out_json}",
+    ]
 
 
 def leaves(names):
@@ -130,34 +147,37 @@ def failure_excerpt(suite, text, test, limit=60):
     out = []
     if suite == "api-go":
         # testify: the block under `=== RUN   <test>`, from `Error:` to `Test:`.
-        start = next((i for i, l in enumerate(lines) if l.strip() == f"=== RUN   {test}"), None)
+        start = next((i for i, line in enumerate(lines) if line.strip() == f"=== RUN   {test}"), None)
         if start is not None:
-            for l in lines[start + 1:]:
-                if l.startswith("=== RUN") or l.strip().startswith("Test:"):
+            for line in lines[start + 1 :]:
+                if line.startswith("=== RUN") or line.strip().startswith("Test:"):
                     break
-                if out or l.strip().startswith("Error:"):
-                    out.append(" ".join(l.strip().split("\t")))
+                if out or line.strip().startswith("Error:"):
+                    out.append(" ".join(line.strip().split("\t")))
     elif suite == "api-rs":
-        start = next((i for i, l in enumerate(lines) if f"thread '{test}'" in l and "panicked" in l), None)
+        start = next((i for i, line in enumerate(lines) if f"thread '{test}'" in line and "panicked" in line), None)
         if start is not None:
-            for l in lines[start + 1:]:
-                if l.startswith(("note: run with", "failures:", "thread '")):
+            for line in lines[start + 1 :]:
+                if line.startswith(("note: run with", "failures:", "thread '")):
                     break
-                out.append(l)
+                out.append(line)
     else:
         # vitest: ` FAIL  <project> <file> > <describe> > <test>` up to the next ⎯⎯⎯ rule.
-        start = next((i for i, l in enumerate(lines)
-                      if "FAIL" in l and test in re.sub(r"\s+>\s+", " ", l)), None)
+        start = next(
+            (i for i, line in enumerate(lines) if "FAIL" in line and test in re.sub(r"\s+>\s+", " ", line)),
+            None,
+        )
         if start is not None:
-            for l in lines[start + 1:]:
-                if "⎯⎯⎯" in l:
+            for line in lines[start + 1 :]:
+                if "⎯⎯⎯" in line:
                     break
-                out.append(l)
+                out.append(line)
     while out and not out[-1].strip():
         out.pop()
     if not out:
         return None
-    return "\n".join(out[:limit] + ([f"... {len(out) - limit} more lines in the log"] if len(out) > limit else []))
+    tail = [f"... {len(out) - limit} more lines in the log"] if len(out) > limit else []
+    return "\n".join(out[:limit] + tail)
 
 
 def suite_error(code, res):
@@ -191,13 +211,23 @@ def run_one(suite, mode, sim_dir, fw_vectors, out, run_lock, sha):
     with run_lock or contextlib.nullcontext(), open(logf, "w") as f:
         t2 = time.time()  # waiting for the lock is neither build nor run time
         if run_lock:
-            bundle.wait_port_free(bundle.SIM_PORT)
+            config.wait_port_free(config.SIM_PORT)
         isolated = [] if run_lock else [str(E2E_DIR / "isolated.sh")]
-        p = subprocess.run(["nice", *isolated, *run_cmd(suite, out_json)], cwd=clone, env=env,
-                           stdout=f, stderr=subprocess.STDOUT, timeout=3600)
+        p = subprocess.run(
+            ["nice", *isolated, *run_cmd(suite, out_json)],
+            cwd=clone,
+            env=env,
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            timeout=3600,
+        )
     text = logf.read_text(errors="replace")
-    res.update(parse(suite, text, out_json), exit=p.returncode,
-               build_s=round(t1 - t0), run_s=round(time.time() - t2))
+    res.update(
+        parse(suite, text, out_json),
+        exit=p.returncode,
+        build_s=round(t1 - t0),
+        run_s=round(time.time() - t2),
+    )
     if err := suite_error(p.returncode, res):
         res["error"] = err
     log(f"{suite} {mode}: {res['passed']} passed, {res['failed']} failed ({res['run_s']}s)")
@@ -210,28 +240,29 @@ def run(sim_dir, fw_vectors, out, suites=tuple(SUITES), revs=None):
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     if "api-ts" in suites:
-        bundle.use_node()
+        config.use_node()
     modes = MODES if Path(fw_vectors).exists() else ("committed",)
     # Without namespaces every suite's simulator binds 15423 on the host: builds stay parallel, runs take turns.
-    run_lock = None if bundle.namespaces() else threading.Lock()
+    run_lock = None if config.namespaces() else threading.Lock()
     jobs = [(s, m) for s in suites for m in modes]
     with ThreadPoolExecutor(len(jobs)) as ex:
-        futs = {j: ex.submit(run_one, *j, Path(sim_dir), Path(fw_vectors), out, run_lock, (revs or {}).get(j[0]))
-                for j in jobs}
+        futs = {
+            j: ex.submit(run_one, *j, Path(sim_dir), Path(fw_vectors), out, run_lock, (revs or {}).get(j[0]))
+            for j in jobs
+        }
     results = {}
     for (s, m), f in futs.items():
         try:
             results.setdefault(s, {})[m] = f.result()
         except Exception as e:  # one broken suite must not hide the others
-            results.setdefault(s, {})[m] = {"error": repr(e), "passed": 0, "failed": 0, "skipped": 0, "failing": [],
-                                            "passing": []}
+            results.setdefault(s, {})[m] = {
+                "error": repr(e),
+                "passed": 0,
+                "failed": 0,
+                "skipped": 0,
+                "failing": [],
+                "passing": [],
+            }
     results = {"simulator": (Path(sim_dir) / "version.txt").read_text().strip(), "suites": results}
     (out / "results.json").write_text(json.dumps(results, indent=2))
     return results
-
-
-if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        sys.exit(__doc__)
-    r = run(*sys.argv[1:])
-    print(json.dumps({s: {m: (v["passed"], v["failed"]) for m, v in ms.items()} for s, ms in r["suites"].items()}))

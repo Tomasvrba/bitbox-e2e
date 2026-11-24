@@ -1,11 +1,6 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = ["pillow>=10", "python-xlib>=0.33"]
-# ///
 """One Rabby flow against one graphical simulator. Run inside isolated.sh (fixed ports below).
 
-  run.py --sim-dir <dir> --rabby-dist <dir> --out <dir> [--record-sock /tmp/x.sock]
+  python rabby/run.py --sim-dir <dir> --rabby-dist <dir> --out <dir> [--record-sock /tmp/x.sock]
 
 Starts: graphical simulator (gsim) on its own Xvfb, sim_bridge.py on :8178, one anvil per chain, the
 API proxy (api_proxy.py, replaying fixtures/rabby-api.json.gz, or recording through --record-sock to
@@ -24,22 +19,17 @@ import os
 import queue
 import shutil
 import signal
-import socket
 import subprocess
 import sys
 import threading
 import time
-import urllib.request
 from pathlib import Path
 
+from bitbox_e2e import config, gsim
+
 RABBY_DIR = Path(__file__).resolve().parent
-E2E_DIR = RABBY_DIR.parent
-sys.path.insert(0, str(E2E_DIR))
-
-import bundle  # noqa: E402
-import gsim  # noqa: E402
-
-ANVIL = Path(os.environ.get("ANVIL", bundle.TOOLS / "foundry" / "bin" / "anvil"))
+E2E_DIR = config.E2E_DIR
+ANVIL = Path(os.environ.get("ANVIL", config.TOOLS / "foundry" / "bin" / "anvil"))
 # chain id -> anvil port; flow.ts sets these as Rabby custom RPCs.
 CHAINS = {1: 8545, 42161: 8546, 56: 8547}
 # The account Rabby imports: m/44'/60'/0'/0/0 of simulator-graphical's --preseed mnemonic. Funded
@@ -51,33 +41,12 @@ TOKENS = {1: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", 42161: "0xaf88d065e77
 PROXY_PORT = 18088
 DAPP_PORT = 8080
 FIXTURE = RABBY_DIR / "fixtures" / "rabby-api.json.gz"
-MITMDUMP = RABBY_DIR / "mitmdump.py"
 # Device setup: unlock, pairing code (random per run) and the idle screens around it.
 SETUP_STEPS = {"boot", "pairing"}
 
 
 def log(msg):
-    print(f"[rabby] {msg}", file=sys.stderr, flush=True)
-
-
-def rpc(port, method, params):
-    req = urllib.request.Request(f"http://127.0.0.1:{port}", json.dumps(
-        {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode(),
-        {"content-type": "application/json"})
-    res = json.loads(urllib.request.urlopen(req, timeout=10).read())
-    if "error" in res:
-        raise RuntimeError(f"{method}: {res['error']}")
-    return res["result"]
-
-
-def wait_port(port, timeout_s=30):
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        with socket.socket() as s:
-            if s.connect_ex(("127.0.0.1", port)) == 0:
-                return
-        time.sleep(0.2)
-    raise RuntimeError(f"nothing listening on 127.0.0.1:{port}")
+    config.log(msg, prefix="rabby")
 
 
 def start_anvils(address, logdir):
@@ -86,25 +55,28 @@ def start_anvils(address, logdir):
     for chain_id, port in CHAINS.items():
         # Base fee 0: Rabby's gas prices come from the recorded mainnet gas market and may be
         # below anvil's default 1 gwei, which anvil would reject.
-        procs.append(subprocess.Popen(
-            [str(ANVIL), "--chain-id", str(chain_id), "--port", str(port), "--block-base-fee-per-gas", "0"],
-            stdout=open(logdir / f"anvil-{chain_id}.log", "w"), stderr=subprocess.STDOUT))
+        with open(logdir / f"anvil-{chain_id}.log", "w") as log_f:
+            procs.append(
+                subprocess.Popen(
+                    [str(ANVIL), "--chain-id", str(chain_id), "--port", str(port), "--block-base-fee-per-gas", "0"],
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,
+                )
+            )
     for chain_id, port in CHAINS.items():
         deadline = time.time() + 30
         while True:
             try:
-                rpc(port, "eth_chainId", [])
+                config.json_rpc_result(port, "eth_chainId", [])
                 break
             except OSError:
                 if time.time() > deadline:
                     raise
                 time.sleep(0.2)
-        rpc(port, "anvil_setBalance", [address, hex(100 * 10**18)])
+        config.json_rpc_result(port, "anvil_setBalance", [address, hex(100 * 10**18)])
         if chain_id in TOKENS:
-            rpc(port, "anvil_setCode", [TOKENS[chain_id], code])
+            config.json_rpc_result(port, "anvil_setCode", [TOKENS[chain_id], code])
     return procs
-
-
 
 
 def serve_dapp():
@@ -160,29 +132,77 @@ def main():
         cleanup.append(sim.stop)
         rec = gsim.Recorder(sim, out / "device", SETUP_STEPS, prefix="device/")
 
-        procs.append(subprocess.Popen([str(E2E_DIR / "bridge" / "sim_bridge.py"), "--log", str(logs / "bridge.log")],
-                                      env=env, stdout=subprocess.DEVNULL, stderr=open(logs / "bridge.err", "w")))
+        with open(logs / "bridge.err", "w") as bridge_err:
+            procs.append(
+                subprocess.Popen(
+                    [sys.executable, str(E2E_DIR / "bridge" / "sim_bridge.py"), "--log", str(logs / "bridge.log")],
+                    env=env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=bridge_err,
+                )
+            )
         procs += start_anvils(ADDRESS, logs)
         if args.record_sock:
-            procs.append(subprocess.Popen([sys.executable, str(RABBY_DIR / "egress.py"), "tcp-to-unix",
-                                           f"127.0.0.1:{PROXY_PORT}", args.record_sock]))
+            procs.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(RABBY_DIR / "egress.py"),
+                        "tcp-to-unix",
+                        f"127.0.0.1:{PROXY_PORT}",
+                        args.record_sock,
+                    ]
+                )
+            )
         else:
-            procs.append(subprocess.Popen(
-                [str(MITMDUMP), "--listen-host", "127.0.0.1",
-                 "-p", str(PROXY_PORT), "-s", str(RABBY_DIR / "api_proxy.py"), "--set", f"fixture={FIXTURE}",
-                 # Lazy: don't resolve/connect upstream on CONNECT (there is no upstream in here).
-                 "--set", "connection_strategy=lazy"],
-                env=env, stdout=open(logs / "api-proxy.log", "w"), stderr=subprocess.STDOUT))
+            with open(logs / "api-proxy.log", "w") as proxy_log:
+                procs.append(
+                    subprocess.Popen(
+                        [
+                            config.venv_bin("mitmdump"),
+                            "--listen-host",
+                            "127.0.0.1",
+                            "-p",
+                            str(PROXY_PORT),
+                            "-s",
+                            str(RABBY_DIR / "api_proxy.py"),
+                            "--set",
+                            f"fixture={FIXTURE}",
+                            # Lazy: don't resolve/connect upstream on CONNECT (there is no upstream in here).
+                            "--set",
+                            "connection_strategy=lazy",
+                        ],
+                        env=env,
+                        stdout=proxy_log,
+                        stderr=subprocess.STDOUT,
+                    )
+                )
         dapp = serve_dapp()
         cleanup.append(dapp.shutdown)
-        wait_port(8178)
-        wait_port(PROXY_PORT, timeout_s=60)
+        config.wait_tcp(8178)
+        config.wait_tcp(PROXY_PORT, timeout_s=60)
 
-        flow = subprocess.Popen(
-            ["node", str(RABBY_DIR / "flow.ts"), "--ext", str(Path(args.rabby_dist).resolve()), "--out", str(out),
-             "--dapp", f"http://127.0.0.1:{DAPP_PORT}/", "--proxy", f"127.0.0.1:{PROXY_PORT}"],
-            cwd=RABBY_DIR, env=dict(env, DISPLAY=bxvfb.disp), text=True,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=open(logs / "flow.err", "w"))
+        with open(logs / "flow.err", "w") as flow_err:
+            flow = subprocess.Popen(
+                [
+                    "node",
+                    str(RABBY_DIR / "flow.ts"),
+                    "--ext",
+                    str(Path(args.rabby_dist).resolve()),
+                    "--out",
+                    str(out),
+                    "--dapp",
+                    f"http://127.0.0.1:{DAPP_PORT}/",
+                    "--proxy",
+                    f"127.0.0.1:{PROXY_PORT}",
+                ],
+                cwd=RABBY_DIR,
+                env=dict(env, DISPLAY=bxvfb.disp),
+                text=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=flow_err,
+            )
         procs.append(flow)
         q = queue.Queue()
         threading.Thread(target=pump, args=(flow.stdout, q), daemon=True).start()
@@ -246,10 +266,16 @@ def main():
     (out / "shots.json").write_text(json.dumps(shots, indent=2))
     (out / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     ok = ok and error is None
-    meta = {"ok": ok, "error": error, "seconds": round(time.time() - t0, 1), "simulator": str(args.sim_dir),
-            "source": (Path(args.sim_dir) / "source.txt").read_text().strip() if (Path(args.sim_dir) / "source.txt").exists() else "",
-            "simulator_version": (Path(args.sim_dir) / "version.txt").read_text().strip() if (Path(args.sim_dir) / "version.txt").exists() else "",
-            "rabby_dist": str(args.rabby_dist), "fixture": "record" if args.record_sock else str(FIXTURE)}
+    meta = {
+        "ok": ok,
+        "error": error,
+        "seconds": round(time.time() - t0, 1),
+        "simulator": str(args.sim_dir),
+        "source": config.read_text(Path(args.sim_dir) / "source.txt"),
+        "simulator_version": config.read_text(Path(args.sim_dir) / "version.txt"),
+        "rabby_dist": str(args.rabby_dist),
+        "fixture": "record" if args.record_sock else str(FIXTURE),
+    }
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     log(f"{'ok' if ok else 'FAILED'}: {len(keep)} device frames, {len(shots)} screenshots, {meta['seconds']}s")
     sys.exit(0 if ok else 1)

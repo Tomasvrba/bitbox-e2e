@@ -16,9 +16,8 @@ import time
 import urllib.request
 from urllib.parse import parse_qsl, urlsplit
 
-from mitmproxy import ctx, http
-
 from etherscan_rules import check  # the script's directory is on sys.path under mitmdump
+from mitmproxy import ctx, http
 
 HOST = "etherscan-api.shiftcrypto.io"
 FUNDS = 100 * 10**18
@@ -95,7 +94,8 @@ class EtherscanFake:
                          "transactionIndex": str(int(tx["transactionIndex"], 16)), "from": tx["from"],
                          "to": tx.get("to") or "", "value": str(int(tx["value"], 16)), "gas": str(int(tx["gas"], 16)),
                          "gasPrice": str(int(rc["effectiveGasPrice"], 16)),
-                         "isError": "0" if rc["status"] == "0x1" else "1", "txreceipt_status": str(int(rc["status"], 16)),
+                         "isError": "0" if rc["status"] == "0x1" else "1",
+                         "txreceipt_status": str(int(rc["status"], 16)),
                          "input": tx["input"], "contractAddress": rc.get("contractAddress") or "",
                          "cumulativeGasUsed": str(int(rc["cumulativeGasUsed"], 16)),
                          "gasUsed": str(int(rc["gasUsed"], 16)), "confirmations": str(head - n + 1),
@@ -139,8 +139,11 @@ class EtherscanFake:
         entry = {"t": round(time.time(), 3), "method": req.method, "chain": chain, "chain_in": given_in,
                  "module": params.get("module"), "action": params.get("action"), "target_length": len(req.path)}
         if error and error.startswith("414"):
-            flow.response = http.Response.make(414, b"<html><head><title>414 Request-URI Too Large</title></head></html>",
-                                               {"content-type": "text/html"})
+            flow.response = http.Response.make(
+                414,
+                b"<html><head><title>414 Request-URI Too Large</title></head></html>",
+                {"content-type": "text/html"},
+            )
             entry["error"] = error
         else:
             if error:
