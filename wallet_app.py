@@ -52,6 +52,23 @@ def wallet_clone(ref, api_go=None):
     return sha, web
 
 
+def reset_app_data(web):
+    """The app's data folder as a fresh install has it, before each side: both sides use the same
+    clone when only the firmware differs, and state of the other side must not leak in. E.g. the
+    app broadcasts the transactions in eth-outgoing.db again on startup, which mines blocks and
+    changes the fees the next side shows. Block header files stay: they are downloaded, take
+    minutes, and hold nothing of a test."""
+    data = web.parent.parent / "appfolder.dev"
+    for p in data.iterdir() if data.exists() else ():
+        for q in (p.iterdir() if p.name == "cache" else (p,)):
+            if q.name.startswith("headers-"):
+                continue
+            if q.is_dir():
+                shutil.rmtree(q)
+            else:
+                q.unlink()
+
+
 def backend_build_error(web):
     """The compiler's output if the app's backend does not build (e.g. against another
     bitbox02-api-go), else None. The tests would only say that servewallet exited."""
@@ -62,6 +79,7 @@ def backend_build_error(web):
 
 def run_wallet(ref, sim_dir, tests, out, api_go=None):
     sha, web = wallet_clone(ref, api_go)
+    reset_app_data(web)
     source = sha[:9] if ref == sha else f"{ref} ({sha[:9]})"
     if (err := backend_build_error(web)):
         log(f"wallet {sha[:9]}: the backend does not build")

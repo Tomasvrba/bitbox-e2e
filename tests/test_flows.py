@@ -37,3 +37,17 @@ def test_an_app_that_no_longer_builds_against_the_change_is_a_regression(tmp_pat
     summary = (tmp_path / "summary.md").read_text()
     assert "The BitBoxApp backend does not build" in summary
     assert "New tests" not in (tmp_path / "report.html").read_text()
+
+
+def test_each_side_starts_with_a_fresh_app_but_keeps_downloaded_headers(tmp_path):
+    """Both sides share the app clone when only the firmware differs; the app rebroadcasts the
+    other side's transactions from eth-outgoing.db on startup, which changed the fees on the device."""
+    import wallet_app
+
+    data = tmp_path / "appfolder.dev"
+    (data / "cache").mkdir(parents=True)
+    for name in ("cache/eth-outgoing.db", "cache/headers-tbtc.bin", "config.json", "accounts.json"):
+        (data / name).write_text("x")
+    (data / "notes").mkdir()
+    wallet_app.reset_app_data(tmp_path / "frontends" / "web")
+    assert sorted(str(p.relative_to(data)) for p in data.rglob("*")) == ["cache", "cache/headers-tbtc.bin"]

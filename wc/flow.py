@@ -63,6 +63,7 @@ def run_side(ref, sim_dir, out, api_go=None):
     """One flow at one app ref (built with bitbox02-api-go at api_go if given). Evidence lands in
     out/{app,device}/, Playwright output alongside."""
     sha, web = wallet_app.wallet_clone(ref, api_go)
+    wallet_app.reset_app_data(web)
     out.mkdir(parents=True, exist_ok=True)
     source = sha[:9] if ref == sha else f"{ref} ({sha[:9]})"
     # servewallet is `go run` from the test with a startup timeout; compile it first.
