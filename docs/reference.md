@@ -58,7 +58,7 @@ versions in `TEST_PYTHON_DEPS`.
 
 ```sh
 e2e/e2e.py pr [--repo firmware|app|api-rs|api-go|api-ts|rabby] [--base <ref>] --head <ref|WORKTREE> \
-  --out <dir> [--pin <repo>=<ref>...] [--graphical <glob>...] [--tests <file>...] [--wc] \
+  --out <dir> [--pin <repo>=<ref>...] [--flows <flow>...] [--graphical <glob>...] [--tests <file>...] \
   [--pr-info <file>] [-j N]
 ```
 
@@ -67,10 +67,41 @@ the remote that points at the upstream repo (`git remote -v`; `origin` in CI). U
 remote for bases: a personal fork's `origin` is often stale. `WORKTREE` (firmware only) builds the
 firmware checkout as it is, uncommitted changes included. `-j` defaults to half the CPUs.
 
-`--pin` keeps another repo at a ref on both sides. Pinnable: `firmware` (for changes elsewhere;
-default upstream `master`), `api-rs`, `api-go`, `api-ts` (default: the sibling checkout's `HEAD`;
-in CI the upstream default branch). The repo under test cannot be pinned. A pinned `api-rs` is also
-what the driver links (otherwise the driver links the sibling `bitbox-api-rs` working tree).
+`--pin` keeps another repo at a ref on both sides. Pinnable: `firmware` and `app` (default upstream
+`master`), `rabby` (default v0.94.15, the release the backend fixture was recorded with), `api-rs`,
+`api-go`, `api-ts`. The API repos default to the sibling checkout's `HEAD` (in CI the upstream
+default branch) in the device flow, and to what the app or Rabby ships with in theirs. The repo
+under test cannot be pinned. A pinned `api-rs` is also what the driver links (otherwise the driver
+links the sibling `bitbox-api-rs` working tree).
+
+### Flows
+
+A change runs the flows of its repo (`e2e.FLOWS`), or those of `--flows`:
+
+| Repo | Flows |
+|---|---|
+| firmware | device, app, wc, rabby |
+| api-go | device, app, wc |
+| api-ts | device, rabby |
+| api-rs | device |
+| app | app, wc |
+| rabby | rabby |
+
+`device` is [firmware and API changes](#firmware-and-api-changes). The others are integrations: the
+[app's tests](#app-flow), the [WalletConnect flow](#walletconnect-flow) and the
+[Rabby flow](#rabby-flow), with the changed repo at the merge-base and at head and the rest the same
+on both sides (`sides.json` in the flow's directory says which is which):
+
+- firmware: each side gets the simulator of its firmware commit.
+- api-go: the app is built against the side's api-go (`go mod edit -replace`, then `go mod vendor`
+  in the app clone; the first run downloads the app's Go modules).
+- api-ts: Rabby is built with the side's api-ts (`npm pack` of it, as the `@bitboxswiss/bitbox-api`
+  dependency; `yarn install` may fetch dependencies that a newer api-ts needs).
+
+The repo's first flow writes the run's report into `--out`, the others into `--out/<flow>`. The
+run's page shows every flow's findings, each prefixed with the flow's name; a flow that could not
+run is named at the top (`flow-error.json`), the other flows still run, and the exit code is 2. CI
+runs one flow per job (`ci/pr.sh --flows <flow>`) and its report job puts the directories together.
 
 ### Firmware and API changes
 
@@ -101,26 +132,24 @@ Reported, not gating: changed screens, expectation mismatches (expectations live
 promoted after the PR merges) and, for a firmware change, API tests failing with the committed
 vector copies.
 
-### App changes
+### App flow
 
-The app's own Playwright tests (`frontends/web/tests`, all unless `--tests`) run from clean clones of
-the merge-base and of head, on one natively built simulator (pinned firmware, default upstream
-`master`). Chromium only, no retries, screenshot/video/trace always on
+The app's own Playwright tests (`frontends/web/tests`, all unless `--tests`) run from clean clones
+of the app on each side, on natively built simulators. The app's backend is built first: if it does
+not build (e.g. against an api-go change), the report says so with the compiler's output. Chromium only, no retries, screenshot/video/trace always on
 (`wallet/playwright.evidence.config.ts`). The report shows each test that passed on base and fails
 on head with its error, its device screens and its last screenshot on both sides; device screen
 changes (from each test's `simulator.log`) of the other tests; and tests failing on both sides.
 Device screens are compared with the values that are random per test run masked (wallet addresses,
 request ids, the date). Screenshots are not compared pixel by pixel: charts animate and test
 wallets are random, so they differ on every run. Exit 1 when a test that passed on base does not
-pass on head. With `--wc` the [WalletConnect flow](#walletconnect-flow) also
-runs, into `<out>/wc`, and its failure also exits 1.
+pass on head.
 
 ### Rabby changes
 
-The [Rabby flow](#rabby-flow) runs with Rabby built at the merge-base and at head, on one simulator
-(pinned firmware, default upstream `master`). Use `--base v0.94.15` (or a later tag) for a branch made
-from a release: the committed backend fixture matches that flow. Exit 1 when the flow fails on
-either side.
+The [Rabby flow](#rabby-flow) runs with Rabby built at the merge-base and at head. Use
+`--base v0.94.15` (or a later tag) for a branch made from a release: the committed backend fixture
+matches that flow.
 
 ### Units
 
@@ -302,8 +331,8 @@ sends: `personal_sign`, `eth_signTypedData_v4`, ETH and ERC-20 (USDC) transfers 
 `wallet_switchEthereumChain` to Arbitrum with an ETH and an ERC-20 transfer, and to BNB Chain with a
 legacy (type 0) transfer. `rabby/run.py` drives the device with the policy every graphical run uses
 (`gsim.Recorder`). Per step the report shows the Rabby screenshots next to the device frames, base
-vs head. Exits 1 when either side's flow failed, including Rabby importing another account than the
-funded one.
+vs head. Exits 1 when a step that passed on base fails on head, including Rabby importing another
+account than the funded one.
 
 - Runs offline inside `isolated.sh` (fixed ports), so it needs network namespaces; ~2.5 min per flow.
 - Rabby's backend (api.rabby.io, static.debank.com) is replayed by `rabby/api_proxy.py` (mitmproxy
@@ -352,24 +381,31 @@ are cached by commit sha.
 
 ## CI
 
-`.github/workflows/pr.yml` (*change*, manual trigger) has the fields in the README. It runs on
-`ubuntu-24.04` with no secrets and a read-only token, checks out the BitBoxSwiss firmware and the
-three API repos next to this one (plus the app or Rabby for those changes), and runs:
+`.github/workflows/pr.yml` (*change*, manual trigger) has the fields in the README. Its jobs run on
+`ubuntu-24.04` with no secrets and a read-only token:
 
-```sh
-sudo e2e/ci/prereqs.sh                       # apt packages, user namespaces
-e2e/ci/pr.sh --repo <repo> --head <branch|commit> [--head-repo <owner>/<repo>] [--pins '...'] ... --out <dir>
-```
+- `plan`: the flows (`e2e.py flows <repo>`, or the Flows field).
+- `flow`, one job per flow: checks out the BitBoxSwiss firmware and the three API repos next to
+  this one (plus the app for the flows app and wc, Rabby for rabby), and runs
+
+  ```sh
+  sudo e2e/ci/prereqs.sh                       # apt packages, user namespaces
+  e2e/ci/pr.sh --repo <repo> --head <branch|commit> [--head-repo <owner>/<repo>] [--pins '...'] --flows <flow> ... --out <dir>
+  ```
+
+  It fails (red) when its flow found a regression; its directory is the `e2e-flow-<flow>` artifact.
+- `report`: puts the flows' directories together as `e2e.py pr` lays them out, renders the run's
+  page (`e2e.py report`) and uploads it as the `e2e-report` artifact; the run's summary is its top.
 
 `pr.sh` checks the inputs, resolves the refs (fetching head from the fork), runs `setup.sh` and
-`e2e.py pr`, and exits with its code. The report directory is the `e2e-report` artifact; its top is
-the run's summary. Only the tools directory is cached (`actions/cache`, keyed by `setup.sh`).
+`e2e.py pr`, and exits with its code. Only the tools directory is cached (`actions/cache`, keyed by
+`setup.sh`).
 
 The same job for a firmware change on this machine, in a bare Ubuntu 24.04 container with 4 CPUs
 and 16G, cloned from the sibling checkouts so head can be an unpushed branch:
 
 ```sh
-e2e/ci/local.sh --base master --head my-branch --out /tmp/e2e/ci
+e2e/ci/local.sh --base master --head my-branch --out /tmp/e2e/ci [--flows 'device app wc']
 ```
 
 Docker allows no user namespaces, so there the fixed-port runs go one at a time. `$E2E_CI_HOME`

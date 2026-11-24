@@ -29,23 +29,30 @@ gating. `e2e.verdict` computes the reasons from `pr.json` data.
 `e2e.py pr --repo <repo>` takes base and head in one of `bundle.REPOS` (firmware, app, api-rs,
 api-go, api-ts, rabby) and compares head with `merge-base(base, head)` in that repo. Every other
 repo is the same on both sides: its `--pin <repo>=<ref>`, else the default (upstream `master` for
-the firmware; the sibling checkout's `HEAD` for the API repos, which in CI is the upstream default
-branch).
+the firmware and the app, Rabby v0.94.15; for the API repos the sibling checkout's `HEAD` in the
+device flow, which in CI is the upstream default branch, and the shipped version in the app and
+Rabby flows).
+
+A change runs several flows (`e2e.FLOWS`): its own tests, then the integrations built on the changed
+repo. The integrations are the point for the BitBox repos: a firmware, api-go or api-ts change can
+break the app or a third-party wallet without failing any test of its own (bitbox-wallet-app#4579).
 
 - firmware, api-*: lanes A and B. A side is (firmware commit, API revisions); the base side is a
   bundle, keyed by the firmware sha and, if any API revision is pinned, a hash of those revisions.
   The driver links the side's `api-rs` (`runs.driver_for`: the pinned commit, built in a cache
   layout that satisfies its `../../bitbox-api-rs` path dependency; else the sibling tree).
-- app: `wallet_app.cmd_app_change`, the app's Playwright tests at both commits on one simulator,
-  optionally the WalletConnect flow.
-- rabby: `rabby_e2e.cmd_rabby_change`, the Rabby flow with Rabby built at both commits.
+- app (`wallet_app.compare`), wc (`wc.flow.compare`), rabby (`rabby_e2e.compare`): each takes
+  `sides` ({"changed", "base": {repo: ref}, "head": {...}}, written to `sides.json`) and builds what
+  differs: a simulator per firmware commit, the app against the side's api-go (go mod replace +
+  vendor), Rabby with the side's api-ts (npm pack as its dependency). Run into `--out/<flow>` unless
+  the flow is the repo's first; `report.with_flows` puts their findings on the run's page.
 
 `ci/pr.sh` is the same entry point for CI: it validates the form's inputs, fetches head from a fork
 and passes commits to `e2e.py pr`.
 
 ## Report
 
-Each flow (`e2e.pr_findings`, `wallet_app.wallet_report`, `rabby_e2e.report`) turns its run
+Each flow (`e2e.pr_findings`, `wallet_app.wallet_report`, `wc.flow.report`, `rabby_e2e.report`) turns its run
 directory into one `findings` dict (format in `report.py`): what broke, what changed on the device,
 what was there before, what was tested. `report.render` writes `report.html` (images linked
 relative to the directory, every one listed in `report-files.txt` for a publish step) and

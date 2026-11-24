@@ -15,10 +15,13 @@ Read the README before the first run.
 2. **Run setup if needed.** `e2e/setup.sh` is idempotent and fast when installed.
 3. **Run** `e2e/e2e.py pr [--repo <repo>] --head <ref> --out /tmp/e2e/<name>`. Firmware/API: add
    `--graphical <glob>` for units whose screenshots the reviewer needs (changed units get them
-   anyway); the first run for a merge-base records its baseline, later runs reuse it. App: `--tests
-   <file>...` to run fewer than all tests, `--wc` for the WalletConnect flow.
+   anyway); the first run for a merge-base records its baseline, later runs reuse it. Every change
+   also runs the integrations on top of its repo (app tests, WalletConnect, Rabby; README "What it
+   can test"), each in `--out/<flow>`: `--flows <flow>...` to run fewer, `--tests <file>...` to run
+   fewer app tests.
 4. **Read `summary.md`, then `report.html`.** The exit code (0 clean, 1 regression, 2 harness
-   error) and *What broke* say whether anything that worked on the merge-base broke.
+   error or a flow that could not run) and *What broke* say whether anything that worked on the
+   merge-base broke; findings of the integrations carry their flow's name.
    - *What changed on the device*: what the change looks like on the device (screens as text are
      authoritative; frames are the screenshots that differ). *Pixel-only differences* are layout
      changes or capture timing: rerun that unit once (`--graphical <id>`) to classify.

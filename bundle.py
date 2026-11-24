@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -92,6 +93,20 @@ def build_sim(ref):
     log(f"building simulators for {ref}")
     res = subprocess.run([str(E2E_DIR / "build-sim.sh"), ref], stdout=subprocess.PIPE, text=True, check=True)
     return Path(res.stdout.strip().splitlines()[-1])
+
+def clone_at(repo, ref):
+    """A clean checkout of one of REPOS at ref, kept in the cache by commit (the working checkout is
+    never touched). Returns (sha, path)."""
+    sha = resolve(ref, repo)
+    src = CACHE / "src" / f"{REPOS[repo].dir.name}-{sha}"
+    if not (src / ".git").exists():
+        tmp = src.with_name(src.name + ".tmp")
+        shutil.rmtree(tmp, ignore_errors=True)
+        subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(REPOS[repo].dir), str(tmp)], check=True)
+        subprocess.run(["git", "-C", str(tmp), "checkout", "-q", "--detach", sha], check=True)
+        tmp.rename(src)
+    return sha, src
+
 
 def bundle_dir(sha, revs=None):
     """Bundle of a firmware commit. revs pins other repos ({"api-rs": sha, ...}); those bundles are

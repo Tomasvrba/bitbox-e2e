@@ -3,10 +3,11 @@
 # requires-python = ">=3.10"
 # dependencies = ["pillow>=10", "python-xlib>=0.33"]
 # ///
-"""Rabby extension -> BitBoxBridge (fake) -> graphical simulator: firmware or Rabby base vs head.
+"""Rabby extension -> BitBoxBridge (fake) -> graphical simulator, before and after a change to
+Rabby, the firmware or bitbox-api-ts.
 
   e2e.py rabby --base <fw-ref> --head <fw-ref> --out <dir> [--rabby-ref v0.94.15]
-  e2e.py pr --repo rabby [--base <rabby-ref>] --head <rabby-ref> --out <dir> [--pin firmware=<ref>]
+  e2e.py pr --repo rabby|firmware|api-ts ... : the flow "rabby" of a change (see e2e.py)
   rabby/rabby_e2e.py repeat --firmware <fw-ref> -n 3 --out <dir>    same flow N times, frame identity
   rabby/rabby_e2e.py record --firmware <fw-ref> --out <dir>         re-record fixtures/rabby-api.json.gz
   rabby/rabby_e2e.py report <dir>
@@ -56,29 +57,54 @@ def rabby_shots_equal(a, b, max_pixels=64):
     return mask.histogram()[255] <= max_pixels
 
 
-def ensure_rabby(ref):
-    """Unpacked chrome-mv3 build of Rabby at ref, cached by commit in rabby-dist/<sha>. All refs are
-    built in one --shared clone (the working checkout is never touched), so node_modules exists
-    once: two clones of it nearly filled a CI runner. A build takes ~10 min."""
+def ensure_rabby(ref, api_ts=None):
+    """Unpacked chrome-mv3 build of Rabby at ref, cached by commit in rabby-dist/<sha>, with
+    bitbox-api-ts at api_ts in place of the release in its lockfile if given. All refs are built in
+    one --shared clone (the working checkout is never touched), so node_modules exists once: two
+    clones of it nearly filled a CI runner. A build takes ~10 min."""
     sha = bundle.resolve(ref, "rabby")
-    dist = bundle.CACHE / "rabby-dist" / sha
+    ts_sha = bundle.resolve(api_ts, "api-ts") if api_ts else None
+    dist = bundle.CACHE / "rabby-dist" / (sha + (f"-api-ts-{ts_sha}" if ts_sha else ""))
     if (dist / "manifest.json").exists():
         return dist
     src = bundle.CACHE / "src" / "rabby"
     if not (src / ".git").exists():
         subprocess.run(["git", "clone", "-q", "--shared", "--no-checkout", str(RABBY_REPO), str(src)], check=True)
-    # -f: a build rewrites tracked files (e.g. the theme it generates).
+    # -f: a build rewrites tracked files (e.g. the theme it generates), an injection package.json
+    # and yarn.lock.
     subprocess.run(["git", "-C", str(src), "checkout", "-q", "-f", "--detach", sha], check=True)
     shutil.rmtree(src / "dist", ignore_errors=True)
+    env = dict(os.environ)
+    if ts_sha:
+        pkg = api_ts_package(ts_sha)
+        manifest = json.loads((src / "package.json").read_text())
+        manifest["dependencies"]["@bitboxswiss/bitbox-api"] = f"file:{pkg}"
+        (src / "package.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        # A newer bitbox-api-ts may bring dependencies the lockfile lacks (CI=true makes yarn
+        # refuse to change it otherwise).
+        env["YARN_ENABLE_IMMUTABLE_INSTALLS"] = "false"
     yarn = re.search(r"^yarnPath:\s*(\S+)", (src / ".yarnrc.yml").read_text(), re.M).group(1)
-    log(f"building Rabby {ref} ({sha[:9]}) in {src}")
+    log(f"building Rabby {ref} ({sha[:9]})" + (f" with bitbox-api-ts {ts_sha[:9]}" if ts_sha else "") + f" in {src}")
     for script in ("install", "build:pro"):
-        subprocess.run(["node", yarn, script], cwd=src, check=True, stdout=sys.stderr)
-    tmp = dist.with_name(sha + ".tmp")
+        subprocess.run(["node", yarn, script], cwd=src, env=env, check=True, stdout=sys.stderr)
+    tmp = dist.with_name(dist.name + ".tmp")
     shutil.rmtree(tmp, ignore_errors=True)
     shutil.copytree(src / "dist", tmp)
     tmp.rename(dist)
     return dist
+
+
+def api_ts_package(sha):
+    """npm pack of bitbox-api-ts at sha (cached): what its release would publish."""
+    _, src = bundle.clone_at("api-ts", sha)
+    pkg = next(src.glob("bitboxswiss-bitbox-api-*.tgz"), None)
+    if pkg:
+        return pkg
+    log(f"bitbox-api-ts {sha[:9]}: npm ci + pack")
+    subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=src, check=True, stdout=sys.stderr)
+    subprocess.run(["npm", "run", "build"], cwd=src, check=True, stdout=sys.stderr)
+    subprocess.run(["npm", "pack", "--ignore-scripts"], cwd=src, check=True, stdout=sys.stderr)
+    return next(src.glob("bitboxswiss-bitbox-api-*.tgz"))
 
 
 def ensure_tools():
@@ -151,37 +177,27 @@ def cmd_record(args):
 
 
 def cmd_rabby(args):
-    """Firmware base vs head through one Rabby build."""
-    return compare({"base": (args.base, args.rabby_ref), "head": (args.head, args.rabby_ref)}, Path(args.out))
-
-
-def cmd_rabby_change(args, firmware=None):
-    """`e2e.py pr --repo rabby`: Rabby at the merge-base vs head, on the pinned firmware or upstream master."""
-    head = bundle.resolve(args.head, "rabby")
-    base = bundle.git("merge-base", bundle.resolve(args.base, "rabby"), head, cwd=RABBY_REPO)
-    firmware = firmware or bundle.resolve(bundle.default_firmware_ref())
-    return compare({"base": (firmware, base), "head": (firmware, args.head)}, Path(args.out))
+    """`e2e.py rabby`: firmware base vs head through one Rabby build."""
+    return compare({"changed": "firmware", "base": {"firmware": args.base, "rabby": args.rabby_ref, "api-ts": None},
+                    "head": {"firmware": args.head, "rabby": args.rabby_ref, "api-ts": None}}, Path(args.out))
 
 
 def compare(sides, out):
-    """sides: {"base"|"head": (firmware ref, Rabby ref)}. Exits 1 if the flow failed on either."""
+    """The flow on both sides (report.load_sides format, repos firmware, rabby, api-ts); returns 1 if
+    a step that passed on base does not on head."""
     ensure_tools()
-    dists = {side: ensure_rabby(rabby) for side, (_, rabby) in sides.items()}
-    sims = {side: build_sim(fw) for side, (fw, _) in sides.items()}
+    dists = {side: ensure_rabby(sides[side]["rabby"], sides[side].get("api-ts")) for side in ("base", "head")}
+    sims = {side: build_sim(sides[side]["firmware"]) for side in ("base", "head")}
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
-    failed = []
+    (out / "sides.json").write_text(json.dumps(sides, indent=1))
     for side in ("base", "head"):
         if not run_flow(sims[side], dists[side], out / side):
-            failed.append(side)
-        m = json.loads((out / side / "meta.json").read_text()) if (out / side / "meta.json").exists() else {}
-        m["firmware"], m["rabby_ref"] = sides[side]
-        (out / side).mkdir(exist_ok=True)
-        (out / side / "meta.json").write_text(json.dumps(m, indent=2))
-    report(out)
-    if failed:
-        log(f"flow failed on {', '.join(failed)}")
-    return 1 if failed else 0
+            log(f"flow failed on {side}")
+    broke = report(out)["broke"]
+    for b in broke:
+        log(f"regression: {b['title']}")
+    return 1 if broke else 0
 
 
 def frame_seq(run_dir):
@@ -256,25 +272,25 @@ STEPS = {
 }
 
 
-def short_ref(ref):
-    return (ref or "-")[:9] if re.fullmatch(r"[0-9a-f]{40}", ref or "") else re.sub(r"^origin/", "", ref or "-")
-
-
 def report(out):
     """report.render for a Rabby run, base vs head."""
     out = Path(out)
     b, h = load(out / "base"), load(out / "head")
     diffdir = out / "diff"
     steps = list(dict.fromkeys(h["order"] + b["order"] + list(STEPS)))
-    rabby_changed = b["meta"].get("rabby_ref") != h["meta"].get("rabby_ref")
+    side = {s: x["meta"] for s, x in (("base", b), ("head", h))}
+    sides = report_mod.load_sides(out) or {
+        "changed": "rabby" if side["base"].get("rabby_ref") != side["head"].get("rabby_ref") else "firmware",
+        **{s: {"firmware": side[s].get("firmware"), "rabby": side[s].get("rabby_ref")} for s in side}}
+    changed = report_mod.REPO_NAMES[sides["changed"]]
     pr_info = report_mod.load_pr_info(out)
     globs = report_mod.intent(pr_info).get("expect")
-    side = {s: x["meta"] for s, x in (("base", b), ("head", h))}
-    what = "rabby_ref" if rabby_changed else "firmware"
-    f = {"repo": bundle.REPOS["rabby" if rabby_changed else "firmware"].slug, "pr": pr_info,
-         "intent": report_mod.intent(pr_info),
-         "title": (pr_info or {}).get("title") or f"Rabby flow: {short_ref(side['head'].get(what))}",
-         "sides": {"base": f"`{short_ref(side['base'].get(what))}`", "head": f"`{short_ref(side['head'].get(what))}`"},
+    f = {"repo": bundle.REPOS[sides["changed"]].slug, "pr": pr_info, "intent": report_mod.intent(pr_info),
+         "title": (pr_info or {}).get("title")
+         or f"Rabby: {changed} {report_mod.short_ref(sides['head'][sides['changed']])}",
+         "sides": report_mod.sides_header(sides),
+         "scope": f"the Rabby browser extension signs with the BitBox02, with {report_mod.sides_fixed(sides)}, "
+                  f"{changed} before and after this PR",
          "broke": [], "changes": [], "known": []}
 
     def step_rows(step):
@@ -309,19 +325,19 @@ def report(out):
             f["changes"].append({"title": f"Screens changed in step \"{text}\"", "where": [step],
                                  "expected": report_mod.is_expected([step], globs), "compare": rows})
     f["tested"] = [
-        "The Rabby browser extension (an unmodified build of each commit) signs with the BitBox02 simulator "
-        "through a stand-in for the BitBoxBridge. Rabby's backend is replayed from a recording; the chains are "
-        "local test chains.",
+        "The Rabby browser extension signs with the BitBox02 simulator through a stand-in for the BitBoxBridge. "
+        f"{changed} is before and after this PR; {report_mod.sides_fixed(sides)} on both sides. Rabby's backend "
+        "is replayed from a recording; the chains are local test chains.",
         "Device screens are compared pixel by pixel, Rabby's own screens with a few pixels of slack.",
         *tested]
-    f["details"] = [("Rabby", short_ref(side["base"].get("rabby_ref")), short_ref(side["head"].get("rabby_ref"))),
-                    ("firmware", short_ref(side["base"].get("firmware")), short_ref(side["head"].get("firmware"))),
+    f["details"] = [*report_mod.sides_details(sides),
                     ("simulator", side["base"].get("simulator_version", "-"), side["head"].get("simulator_version", "-")),
                     ("run time (s)", side["base"].get("seconds", "-"), side["head"].get("seconds", "-"))]
     f["notes"] = ["Logs and every frame: base/ and head/ (frames.json, events.jsonl)."]
     page = report_mod.render(out, f)
     log(f"report: {page}")
     print(page)
+    return f
 
 
 def add_common(p):

@@ -59,11 +59,20 @@ def check_ports():
         raise RuntimeError(f"ports {busy} busy on 127.0.0.1; stop the other app/simulator first")
 
 
-def run_side(ref, sim_dir, out):
-    """One flow at one app ref. Evidence lands in out/{app,device}/, Playwright output alongside."""
-    sha, web = wallet_app.wallet_clone(ref)
+def run_side(ref, sim_dir, out, api_go=None):
+    """One flow at one app ref (built with bitbox02-api-go at api_go if given). Evidence lands in
+    out/{app,device}/, Playwright output alongside."""
+    sha, web = wallet_app.wallet_clone(ref, api_go)
+    out.mkdir(parents=True, exist_ok=True)
+    source = sha[:9] if ref == sha else f"{ref} ({sha[:9]})"
     # servewallet is `go run` from the test with a startup timeout; compile it first.
-    subprocess.run(["go", "build", "-o", os.devnull, "./cmd/servewallet"], cwd=web.parent.parent, check=True)
+    if (err := wallet_app.backend_build_error(web)):
+        log(f"wc {sha[:9]}: the backend does not build")
+        meta = {"source": source, "simulator": read_text(Path(sim_dir) / "source.txt"),
+                "simulator_version": read_text(Path(sim_dir) / "version.txt"), "passed": False,
+                "error": "The BitBoxApp backend does not build:\n" + err, "build_error": True}
+        (out / "meta.json").write_text(json.dumps(meta, indent=2))
+        return meta
     check_ports()
     shutil.copy(E2E_DIR / "wallet" / "playwright.evidence.config.ts", web)
     test_dst = web / "tests" / TEST
@@ -90,7 +99,7 @@ def run_side(ref, sim_dir, out):
     if (web / "e2e-results.json").exists():
         shutil.copy(web / "e2e-results.json", out / "e2e-results.json")
         error = first_error(json.loads((out / "e2e-results.json").read_text()))
-    meta = {"source": sha[:9] if ref == sha else f"{ref} ({sha[:9]})", "simulator": read_text(Path(sim_dir) / "source.txt"),
+    meta = {"source": source, "simulator": read_text(Path(sim_dir) / "source.txt"),
             "simulator_version": read_text(Path(sim_dir) / "version.txt"),
             "passed": res.returncode == 0, "error": error}
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
@@ -113,15 +122,24 @@ def first_error(results):
 
 
 def cmd_wc(args):
+    """`e2e.py wc`: app base vs head on one firmware."""
+    fw = args.firmware or bundle.default_firmware_ref()
+    return compare({"changed": "app", "base": {"firmware": fw, "app": args.base, "api-go": None},
+                    "head": {"firmware": fw, "app": args.head, "api-go": None}}, Path(args.out))
+
+
+def compare(sides, out):
+    """The flow on both sides (report.load_sides format, repos firmware, app, api-go); returns 1 if
+    a request that worked on base does not on head."""
     bundle.use_node()
-    out = Path(args.out)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
+    (out / "sides.json").write_text(json.dumps(sides, indent=1))
     ensure_dapp()
-    sim_dir = build_sim(args.firmware or bundle.default_firmware_ref())
-    for side, ref in (("base", args.base), ("head", args.head)):
-        run_side(ref, sim_dir, out / side)
+    sims = {side: build_sim(sides[side]["firmware"]) for side in ("base", "head")}
+    for side in ("base", "head"):
+        run_side(sides[side]["app"], sims[side], out / side, sides[side].get("api-go"))
     # Like the other flows: exit 1 only for what got worse from base to head. The test itself
     # tolerates rejected requests; the report compares what the dapp got per request.
     broke = report(out)["broke"]
@@ -194,11 +212,17 @@ def report(out):
     rb, rh = {r["step"]: r for r in sb}, {r["step"]: r for r in sh}
     names = list(dict.fromkeys([r["step"] for r in sb] + [r["step"] for r in sh]))
     diffdir = out / "diff"
+    sides = report_mod.load_sides(out) or {"changed": "app", **{s: {"firmware": meta[s]["simulator"], "app": meta[s]["source"]}
+                                                                    for s in ("base", "head")}}
+    changed = report_mod.REPO_NAMES[sides["changed"]]
     pr_info = report_mod.load_pr_info(out)
     globs = report_mod.intent(pr_info).get("expect")
-    f = {"repo": bundle.REPOS["app"].slug, "pr": pr_info, "intent": report_mod.intent(pr_info),
-         "title": (pr_info or {}).get("title") or f"WalletConnect flow: {meta['head']['source']}",
-         "sides": {"base": f"`{meta['base']['source']}`", "head": f"`{meta['head']['source']}`"},
+    f = {"repo": bundle.REPOS[sides["changed"]].slug, "pr": pr_info, "intent": report_mod.intent(pr_info),
+         "title": (pr_info or {}).get("title")
+         or f"WalletConnect: {changed} {report_mod.short_ref(sides['head'][sides['changed']])}",
+         "sides": report_mod.sides_header(sides),
+         "scope": f"a dapp signs through the BitBoxApp over WalletConnect, with {report_mod.sides_fixed(sides)}, "
+                  f"{changed} before and after this PR",
          "broke": [], "fixed": [], "changes": [], "minor": [], "known": []}
 
     def rows(name):
@@ -217,6 +241,7 @@ def report(out):
         return dev, out_rows, app_changed
 
     local = (out / "head" / "chains" / "etherscan.jsonl").exists()
+    not_built = meta["base"].get("build_error") or meta["head"].get("build_error")
     tested = []
     for name in names:
         b, h = rb.get(name), rh.get(name)
@@ -225,6 +250,8 @@ def report(out):
         what = (f"`{rec['method']}` on {CHAIN_NAMES.get(chain_id, f'chain {chain_id}')} (`{name}`)"
                 if rec.get("method") else f"`{name}`")
         tested.append(f"{what}: before {dapp_text(b) if b else 'not run'}; after {dapp_text(h) if h else 'not run'}.")
+        if not_built:  # its steps did not run: nothing to compare them with
+            continue
         dev, app_rows, app_changed = rows(name)
         if dapp_ok(b) and not dapp_ok(h):
             chain = (rec.get("chainId") or "").split(":")[-1]
@@ -243,25 +270,24 @@ def report(out):
                                  "expected": report_mod.is_expected([name], globs), "compare": dev + app_rows})
         elif dev or app_changed:
             f["minor"].append({"title": f"`{name}`", "compare": dev + app_rows})
-    for side in ("base", "head"):
-        if meta[side].get("error") and not (side == "base" and meta["head"].get("error")):
-            item = {"title": f"The WalletConnect test failed {'before' if side == 'base' else 'with'} this PR",
-                    "excerpt": meta[side]["error"]}
-            if side == "head" and meta["base"]["passed"]:
-                f["broke"].append(item)
-            else:
-                f["known"].append(f"The WalletConnect test fails {'before and after' if meta['head'].get('error') else 'before'} "
-                                  f"this PR: {meta[side]['error'].splitlines()[0][:160]}")
+    eb, eh = meta["base"].get("error"), meta["head"].get("error")
+    if eh and not eb:
+        f["broke"].append({"title": "The BitBoxApp backend does not build" if meta["head"].get("build_error")
+                           else "The WalletConnect test fails", "detail": "It passed before this PR.", "excerpt": eh})
+    elif eb and eh:
+        f["known"].append(f"The WalletConnect test fails before and after this PR: {eh.splitlines()[0][:160]}")
+    elif eb:
+        f["fixed"].append(f"The WalletConnect test passes; before this PR: {eb.splitlines()[0][:160]}")
     f["tested"] = [
         "A test dapp pairs with the BitBoxApp over the public WalletConnect relay and sends signing requests. "
-        "The app approves each one, and the graphical simulator confirms it on the device "
-        f"(firmware `{meta['head']['simulator'][:9]}`).",
+        f"The app approves each one, and the graphical simulator confirms it on the device. {changed} is "
+        f"before and after this PR; {report_mod.sides_fixed(sides)} on both sides.",
         "The app's Etherscan proxy is a local stand-in in front of local test chains, with the real proxy's "
         "request rules; the dapp checks that each sent transaction is on the chain." if local else
         "Transactions take their gas price from the live Etherscan proxy, so their fee screens differ on every "
         "run: their differences are listed under pixel-only differences.",
         *tested]
-    f["details"] = [("app", meta["base"]["source"], meta["head"]["source"]),
+    f["details"] = [*report_mod.sides_details(sides),
                     ("simulator", meta["base"]["simulator_version"], meta["head"]["simulator_version"])]
     f["notes"] = ["Logs: */playwright.log, */device.log, */dapp.log."]
     page = report_mod.render(out, f)

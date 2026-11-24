@@ -7,8 +7,10 @@
 
   e2e.py baseline <ref> [--graphical <glob>...] [-j N]       record the bundle for a firmware commit
   e2e.py pr [--repo firmware|app|api-rs|api-go|api-ts|rabby] [--base <ref>] --head <ref> --out <dir>
-            [--pin <repo>=<ref>...] [--graphical <glob>...] [--tests <file>...] [--wc] [--pr-info <file>] [-j N]
+            [--pin <repo>=<ref>...] [--flows <flow>...] [--graphical <glob>...] [--tests <file>...]
+            [--pr-info <file>] [-j N]                        one change: its own tests and the integrations
   e2e.py report <pr-out-dir> [--pr-info <file>]               render the report again
+  e2e.py flows <repo>                                          the flows a change in repo runs (JSON)
   e2e.py promote <pr-out-dir> <unit-id>...                    head screens become expectations
   e2e.py device  --scenario scenarios/x.json --sim-dir <dir> --out <dir>   one scenario, one simulator
   e2e.py wc --base <app-ref> --head <app-ref> --out <dir> [--firmware <ref>]   WalletConnect flow (wc/)
@@ -227,8 +229,9 @@ def promote_path(p):
     return full
 
 
-# Repos that --pin can fix for both sides; the app and Rabby are only ever the change under test.
-PIN_REPOS = ("firmware", "api-rs", "api-go", "api-ts")
+# Repos that --pin can fix for both sides: any but the one under test.
+PIN_REPOS = ("firmware", "app", "api-rs", "api-go", "api-ts", "rabby")
+API_REPOS = ("api-rs", "api-go", "api-ts")
 
 
 def parse_pins(pins, changed=None):
@@ -245,39 +248,120 @@ def parse_pins(pins, changed=None):
 
 
 def api_pins(pins):
-    return {k: v for k, v in pins.items() if k != "firmware"}
+    return {k: v for k, v in pins.items() if k in API_REPOS}
+
+
+# What a change in each repo runs. "device": every unit and the API suites (cmd_device_change). The
+# others are the integrations built on top of the BitBox repos: the app's own tests, a dapp over
+# WalletConnect through the app, and the Rabby extension. They catch a change that breaks a
+# wallet integration, like bitbox-wallet-app#4579. The first flow writes the run's report into
+# --out, the others into --out/<flow>, and the run's page shows them all.
+FLOWS = {
+    "firmware": ("device", "app", "wc", "rabby"),
+    "api-rs": ("device",),
+    "api-go": ("device", "app", "wc"),
+    "api-ts": ("device", "rabby"),
+    "app": ("app", "wc"),
+    "rabby": ("rabby",),
+}
+# The repos each integration flow builds on. The changed one is at base and head, the others at
+# --pin or these defaults on both sides; None is the version the app or Rabby ships with.
+FLOW_REPOS = {"app": ("firmware", "app", "api-go"), "wc": ("firmware", "app", "api-go"),
+              "rabby": ("firmware", "rabby", "api-ts")}
+
+
+def flow_default(repo):
+    if repo in ("firmware", "app"):
+        return bundle.resolve(bundle.default_ref(repo), repo)
+    if repo == "rabby":
+        from rabby import rabby_e2e
+        return rabby_e2e.DEFAULT_REF
+    return None
+
+
+def flow_sides(flow, repo, base, head, pins):
+    sides = {"changed": repo, "base": {}, "head": {}}
+    for r in FLOW_REPOS[flow]:
+        b, h = (base, head) if r == repo else (pins.get(r) or flow_default(r),) * 2
+        sides["base"][r], sides["head"][r] = b, h
+    return sides
+
+
+def flow_dir(out, repo, flow):
+    return out if flow == FLOWS[repo][0] else out / flow
+
+
+def run_flow(flow, args, base, pins, out):
+    """One flow of the change; 0 nothing broke, 1 something broke."""
+    if flow == "device":
+        return cmd_device_change(args, pins)
+    sides = flow_sides(flow, args.repo, base, args.head, pins)
+    if flow == "app":
+        return wallet_app.compare(sides, args.tests, out)
+    if flow == "wc":
+        from wc import flow as wc_flow
+        return wc_flow.compare(sides, out)
+    from rabby import rabby_e2e
+    return rabby_e2e.compare(sides, out)
 
 
 def cmd_pr(args):
-    """One change, base vs head, in the repo given by --repo; the other repos at their pins."""
+    """One change, base vs head, in the repo given by --repo; the other repos at their pins. Runs
+    the repo's FLOWS (or --flows), each to the end even when one fails."""
     args.base = args.base or bundle.default_ref(args.repo)
     pins = parse_pins(args.pin, args.repo)
-    if args.repo in ("app", "rabby") and set(pins) - {"firmware"}:
-        sys.exit(f"--pin: only the firmware is used in a {args.repo} change")
+    flows = args.flows or FLOWS[args.repo]
+    if bad := [x for x in flows if x not in FLOWS[args.repo]]:
+        sys.exit(f"--flows: a {args.repo} change runs {', '.join(FLOWS[args.repo])}, not {', '.join(bad)}")
     # Read first: the flows start by emptying --out, which may hold the file.
     pr_info = Path(args.pr_info).read_text() if args.pr_info else None
-    if args.repo == "app":
-        rc = wallet_app.cmd_app_change(args, pins.get("firmware"))
-    elif args.repo == "rabby":
-        from rabby import rabby_e2e
-        rc = rabby_e2e.cmd_rabby_change(args, pins.get("firmware"))
-    else:
-        rc = cmd_device_change(args, pins)
+    out = Path(args.out)
+    for d in (out, *(out / x for x in report.FLOW_DIRS)):
+        # Results of an earlier run must not show up as this one's.
+        for name in ("flow-error.json", "findings.json"):
+            (d / name).unlink(missing_ok=True)
+    head = bundle.resolve(args.head, args.repo)
+    base = bundle.git("merge-base", bundle.resolve(args.base, args.repo), head, cwd=bundle.REPOS[args.repo].dir)
+    rc = 0
+    for flow in sorted(flows, key=FLOWS[args.repo].index):
+        d = flow_dir(out, args.repo, flow)
+        log(f"flow {flow}: {d}")
+        try:
+            rc = max(rc, run_flow(flow, args, base, pins, d))
+        except Exception:  # noqa: BLE001 - the other flows still run; the report says this one could not
+            traceback.print_exc()
+            report.write_flow_error(d, flow, traceback.format_exc())
+            rc = 2
     if pr_info:
-        (Path(args.out) / "pr-info.json").write_text(pr_info)
-        render_report(Path(args.out))
+        (out / "pr-info.json").write_text(pr_info)
+    render_report(out)
     return rc
 
 
 def render_report(out):
-    """Renders report.html and summary.md again from a run's directory, e.g. with pr-info.json added."""
+    """Renders report.html and summary.md again from a run's directory (e.g. with pr-info.json
+    added): the integration flows' own pages first, then the run's page, which shows them all."""
+    from rabby import rabby_e2e
+    from wc import flow as wc_flow
+    renderers = {"app": wallet_app.wallet_report, "wc": wc_flow.report, "rabby": rabby_e2e.report}
+    for flow in report.FLOW_DIRS:
+        if (out / flow / "base").is_dir() and not (out / flow / "flow-error.json").exists():
+            renderers[flow](out / flow)
+    if (out / "flow-error.json").exists():
+        e = json.loads((out / "flow-error.json").read_text())
+        pr_info = report.load_pr_info(out)
+        return report.render(out, {"title": (pr_info or {}).get("title") or f"{report.FLOW_NAMES[e['flow']]} could not run",
+                                   "pr": pr_info, "intent": report.intent(pr_info)})
     if (out / "pr.json").exists():
         return pr_report(out)
     if (out / "base" / "tests.json").exists():
         return wallet_app.wallet_report(out)
     if (out / "base" / "frames.json").exists() or (out / "head" / "frames.json").exists():
-        from rabby import rabby_e2e
         return rabby_e2e.report(out)
+    if any((out / x).is_dir() for x in report.FLOW_DIRS):  # only integration flows ran (--flows)
+        pr_info = report.load_pr_info(out)
+        return report.render(out, {"title": (pr_info or {}).get("title") or "Integration flows",
+                                   "pr": pr_info, "intent": report.intent(pr_info)})
     sys.exit(f"{out}: not the --out directory of e2e.py pr")
 
 
@@ -643,14 +727,17 @@ def main():
             b.add_argument("--head", required=True, help="ref in that repo, or WORKTREE (firmware only)")
             b.add_argument("--out", required=True)
             b.add_argument("--tests", nargs="+", default=[], metavar="FILE",
-                           help="app change: Playwright test files to run, relative to frontends/web (default: all)")
-            b.add_argument("--wc", action="store_true", help="app change: also the WalletConnect flow")
+                           help="flow app: Playwright test files to run, relative to frontends/web (default: all)")
+            b.add_argument("--flows", nargs="+", choices=report.FLOW_NAMES, metavar="FLOW",
+                           help="run only these of the change's flows (" + "; ".join(
+                               f"{r}: {' '.join(f)}" for r, f in FLOWS.items()) + "; default: all)")
             b.add_argument("--pr-info", metavar="FILE", help="the PR as JSON (`gh pr view --json url,number,"
                            "title,body`, plus repo): the report shows its title and description, and its "
                            "<!-- e2e expect: ... --> globs mark changes as expected")
         b.add_argument("--pin", action="append", default=[], metavar="REPO=REF",
-                       help=f"run another repo at this ref on both sides ({', '.join(PIN_REPOS)}); "
-                       "default: the sibling checkout's HEAD for the API repos, upstream master for the firmware")
+                       help=f"run another repo at this ref on both sides ({', '.join(PIN_REPOS)}); default: "
+                       "upstream master for the firmware and the app, Rabby v0.94.15, for the API repos the "
+                       "sibling checkout's HEAD in the device flow and the version the app or Rabby ships with in theirs")
         b.add_argument("--graphical", nargs="+", action="extend", default=[], metavar="GLOB",
                        help="unit id globs to also run on the graphical simulator")
         b.add_argument("-j", "--jobs", type=int, default=bundle.JOBS,
@@ -658,6 +745,8 @@ def main():
     rp = sub.add_parser("report", help="render report.html and summary.md again from a pr --out directory")
     rp.add_argument("dir")
     rp.add_argument("--pr-info", metavar="FILE", help="as for pr")
+    fl = sub.add_parser("flows", help="the flows a change in repo runs, as a JSON list (for the CI job matrix)")
+    fl.add_argument("repo", choices=FLOWS)
     pm = sub.add_parser("promote")
     pm.add_argument("dir", help="e2e.py pr --out directory")
     pm.add_argument("units", nargs="+")
@@ -702,6 +791,9 @@ def dispatch(args):
         return cmd_baseline(args)
     if args.cmd == "pr":
         return cmd_pr(args)
+    if args.cmd == "flows":
+        print(json.dumps(FLOWS[args.repo]))
+        return 0
     if args.cmd == "report":
         out = Path(args.dir)
         if args.pr_info:
