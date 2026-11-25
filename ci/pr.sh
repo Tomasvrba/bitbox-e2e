@@ -16,7 +16,7 @@ set -euo pipefail
 set -f  # the lists below are split on spaces; their globs are for e2e, not the shell
 
 usage() { sed -n '2,14p' "$0" >&2; exit 2; }
-repo=firmware base= head= head_repo= pins= graphical= tests= flows= out=
+repo=firmware base='' head='' head_repo='' pins='' graphical='' tests='' flows='' out=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) repo="${2:-}" ;;
@@ -32,7 +32,9 @@ while [ $# -gt 0 ]; do
   esac
   shift 2 || usage
 done
-[ -n "$head" ] && [ -n "$out" ] || usage
+if [ -z "$head" ] || [ -z "$out" ]; then
+  usage
+fi
 
 case "$repo" in
   firmware) dir=bitbox02-firmware branch=master ;;

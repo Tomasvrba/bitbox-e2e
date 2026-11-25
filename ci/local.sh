@@ -18,7 +18,7 @@
 # like the workflow's tools cache; delete it for a cold run.
 set -euo pipefail
 
-base= head= out=
+base='' head='' out=''
 flows=device
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -30,7 +30,10 @@ while [ $# -gt 0 ]; do
   esac
   shift 2 || { sed -n '2,8p' "$0" >&2; exit 2; }
 done
-[ -n "$base" ] && [ -n "$head" ] && [ -n "$out" ] || { sed -n '2,8p' "$0" >&2; exit 2; }
+if [ -z "$base" ] || [ -z "$head" ] || [ -z "$out" ]; then
+  sed -n '2,8p' "$0" >&2
+  exit 2
+fi
 case " $flows " in *" rabby "*) echo "local.sh: the rabby flow needs network namespaces, which the container lacks" >&2; exit 2 ;; esac
 
 src="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
