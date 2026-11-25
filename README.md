@@ -36,7 +36,7 @@ Drop [ci/pr-caller.yml](ci/pr-caller.yml) into `.github/workflows/e2e.yml` in an
 - [ ] `rabby` — Rabby extension flow
 ```
 
-When a maintainer adds the `run-e2e` label, the caller invokes `.github/workflows/pr.yml` via `workflow_call` for only the checked flows (or all default flows if no e2e checklist is present), posts/updates `summary.md` + the `e2e-report` link as a PR comment, and removes the `run-e2e` label.
+When a maintainer adds the `run-e2e` label, the caller invokes `.github/workflows/pr.yml` via `workflow_call` for only the checked flows (or all default flows if no e2e checklist is present), publishes `report.html` + referenced PNGs to `gh-pages`, posts/updates a sticky PR comment with inline screenshots and a clickable link to the hosted report, and removes the `run-e2e` label. Set an optional `E2E_PAGES_TOKEN` secret (with `contents: write` on `bitbox-e2e`) to host reports centrally on `bitbox-e2e`'s `gh-pages`; otherwise they publish to the calling repo's `gh-pages` (or fall back to the workflow artifact).
 
 ### Manual run
 

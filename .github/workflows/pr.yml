@@ -79,6 +79,10 @@ on:
         description: Ref of bitbox-e2e to check out
         type: string
         default: main
+    secrets:
+      pages_token:
+        description: Optional PAT with contents:write on e2e_repo to host reports on its gh-pages
+        required: false
     outputs:
       flows:
         description: JSON list of flows that ran
@@ -86,6 +90,9 @@ on:
       summary:
         description: Rendered summary.md Markdown for posting as a PR comment
         value: ${{ jobs.report.outputs.summary }}
+      report_url:
+        description: Public URL of the published HTML report (empty if gh-pages publishing was skipped)
+        value: ${{ jobs.report.outputs.report_url }}
 
 # Code from the refs above builds and runs here: no secrets, read-only token.
 permissions:
@@ -94,6 +101,8 @@ permissions:
 jobs:
   plan:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     outputs:
       flows: ${{ steps.flows.outputs.flows }}
     steps:
@@ -131,6 +140,8 @@ jobs:
     if: ${{ needs.plan.outputs.flows != '[]' }}
     name: ${{ matrix.flow }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -228,8 +239,11 @@ jobs:
     needs: [plan, flow]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     outputs:
       summary: ${{ steps.render.outputs.summary }}
+      report_url: ${{ steps.render.outputs.report_url }}
     steps:
       - if: ${{ needs.plan.outputs.flows != '[]' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -248,12 +262,18 @@ jobs:
           pattern: e2e-flow-*
           path: ${{ runner.temp }}/flows
       - id: render
-        name: e2e report
+        name: e2e report and publish
         env:
           FLOWS: ${{ needs.plan.outputs.flows }}
+          E2E_REPO: ${{ inputs.e2e_repo || github.repository }}
+          CALLER_REPO: ${{ github.repository }}
+          PAGES_TOKEN: ${{ secrets.pages_token }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           out="$RUNNER_TEMP/report"
           mkdir -p "$out"
+          report_url=""
           if [ "$FLOWS" = "[]" ]; then
             cat > "$out/summary.md" <<'MD'
           ### ℹ️ No e2e flows selected
@@ -273,8 +293,66 @@ jobs:
               fi
             done
             uv run --project e2e --no-sync e2e report "$out"
+
+            # Publish report-files.txt to gh-pages (e2e_repo when running there or with pages_token,
+            # else the calling repo's gh-pages). Re-render summary.md with inline image URLs if pushed.
+            if [ -n "$PAGES_TOKEN" ]; then
+              pub_repo="$E2E_REPO"
+              pub_token="$PAGES_TOKEN"
+            elif [ "$CALLER_REPO" = "$E2E_REPO" ]; then
+              pub_repo="$E2E_REPO"
+              pub_token="$GH_TOKEN"
+            else
+              pub_repo="$CALLER_REPO"
+              pub_token="$GH_TOKEN"
+            fi
+            pub_owner="${pub_repo%%/*}"
+            pub_name="${pub_repo#*/}"
+            base_url="https://${pub_owner,,}.github.io/${pub_name}/runs/${RUN_ID}"
+
+            pages_dir="$RUNNER_TEMP/gh-pages"
+            rm -rf "$pages_dir"
+            git init -q "$pages_dir"
+            git -C "$pages_dir" config user.name "bitbox-e2e[bot]"
+            git -C "$pages_dir" config user.email "bitbox-e2e[bot]@users.noreply.github.com"
+            remote="https://x-access-token:${pub_token}@github.com/${pub_repo}.git"
+            if git -C "$pages_dir" fetch -q --depth=1 "$remote" gh-pages 2>/dev/null; then
+              git -C "$pages_dir" checkout -q -B gh-pages FETCH_HEAD
+            else
+              git -C "$pages_dir" checkout -q --orphan gh-pages
+            fi
+            touch "$pages_dir/.nojekyll"
+            dest="$pages_dir/runs/$RUN_ID"
+            rm -rf "$dest"
+            mkdir -p "$dest"
+            while IFS= read -r rel; do
+              [ -n "$rel" ] || continue
+              mkdir -p "$dest/$(dirname "$rel")"
+              cp "$out/$rel" "$dest/$rel"
+            done < "$out/report-files.txt"
+            git -C "$pages_dir" add -A
+            pushed=0
+            if git -C "$pages_dir" diff --cached --quiet; then
+              pushed=1
+            else
+              git -C "$pages_dir" commit -qm "e2e report: run $RUN_ID"
+              for attempt in 1 2 3; do
+                if git -C "$pages_dir" push -q "$remote" gh-pages; then
+                  pushed=1
+                  break
+                fi
+                git -C "$pages_dir" fetch -q --depth=1 "$remote" gh-pages && git -C "$pages_dir" rebase -q FETCH_HEAD || break
+              done
+            fi
+            if [ "$pushed" -eq 1 ]; then
+              report_url="$base_url/report.html"
+              uv run --project e2e --no-sync e2e report "$out" --base-url "$base_url"
+            else
+              echo "::warning::Could not push report to $pub_repo gh-pages; falling back to artifact link only"
+            fi
           fi
           cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "report_url=$report_url" >> "$GITHUB_OUTPUT"
           eof="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
           {
             echo "summary<<$eof"

@@ -10,6 +10,7 @@ import json
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from urllib.parse import quote
 
 from bitbox_e2e.config import FLOW_NAMES, FLOW_ORDER, REPO_NAMES, SHIPPED
 
@@ -139,6 +140,7 @@ class Findings:
     fixed: list[str] = field(default_factory=list)
     changes: list[ScreenChange] = field(default_factory=list)
     minor: list[ScreenChange] = field(default_factory=list)
+    proof: list[ScreenChange] = field(default_factory=list)
     known: list[str] = field(default_factory=list)
     followups: list[str] = field(default_factory=list)
     cautions: list[str] = field(default_factory=list)
@@ -157,6 +159,7 @@ class Findings:
             "fixed": list(self.fixed),
             "changes": [c.to_dict() for c in self.changes],
             "minor": [m.to_dict() for m in self.minor],
+            "proof": [p.to_dict() for p in self.proof],
             "known": list(self.known),
             "followups": list(self.followups),
             "cautions": list(self.cautions),
@@ -179,6 +182,7 @@ class Findings:
             fixed=list(d.get("fixed") or []),
             changes=[ScreenChange.from_dict(c) for c in d.get("changes") or []],
             minor=[ScreenChange.from_dict(m) for m in d.get("minor") or []],
+            proof=[ScreenChange.from_dict(p) for p in d.get("proof") or []],
             known=list(d.get("known") or []),
             followups=list(d.get("followups") or []),
             cautions=list(d.get("cautions") or []),
@@ -484,6 +488,13 @@ border-radius:6px;text-align:center}
 .cmp .label{grid-column:1/-1;font-weight:600;font-size:14px;margin-top:6px}
 .cmp img{width:100%;height:auto;display:block;border-radius:4px;border:1px solid var(--line);image-rendering:pixelated}
 .cmp img.photo{image-rendering:auto}
+.filmstrip{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;
+margin:10px 0;align-items:start}
+.filmstrip figure{margin:0;display:flex;flex-direction:column;gap:4px}
+.filmstrip figcaption{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.filmstrip img{width:100%;height:auto;display:block;border-radius:4px;border:1px solid var(--line);
+image-rendering:pixelated}
+.filmstrip img.photo{image-rendering:auto}
 details{margin:10px 0}summary{cursor:pointer;font-weight:600}
 details>div{padding:4px 0 0 16px}
 table{border-collapse:collapse;font-size:14px;margin:8px 0;display:block;overflow-x:auto}
@@ -493,7 +504,12 @@ ul{padding-left:20px}li{margin:3px 0}
 """
 
 
-def _render_page(out: Path, findings: Findings, sub_files: list[str] | None = None) -> Path:
+def _render_page(
+    out: Path,
+    findings: Findings,
+    sub_files: list[str] | None = None,
+    base_url: str | None = None,
+) -> Path:
     """Writes report.html, summary.md and report-files.txt (the page and every image it shows, for
     a publish step) into out. Images outside out, or not PNG files, are left out."""
     out = Path(out)
@@ -554,6 +570,17 @@ def _render_page(out: Path, findings: Findings, sub_files: list[str] | None = No
             if marked:
                 h.append(img(r.marked, "marked", ph) if r.marked else "<div></div>")
         return "".join(h) + "</div>"
+
+    def filmstrip(rows: list[CompareRow], photo: bool = False) -> str:
+        items = []
+        for r in rows:
+            rel = r.after or r.before
+            if not rel:
+                continue
+            ph = photo or r.photo
+            cap = f"<figcaption>{t(r.label)}</figcaption>" if r.label else ""
+            items.append(f"<figure>{img(rel, r.label or 'screen', ph)}{cap}</figure>")
+        return '<div class="filmstrip">' + "".join(items) + "</div>" if items else ""
 
     def excerpt(text: str) -> str:
         lines = text.splitlines()
@@ -643,6 +670,15 @@ def _render_page(out: Path, findings: Findings, sub_files: list[str] | None = No
         for m in f.minor:
             h.append(f'<article class="card"><h3>{t(m.title)}</h3>{compare(m.compare, m.photo)}</article>')
         h.append("</div></details>")
+    if f.proof:
+        h.append(
+            f"<details><summary>Proof: screens and screenshots from passing flows ({len(f.proof)})"
+            "</summary><div>"
+        )
+        for p_item in f.proof:
+            body = filmstrip(p_item.compare, p_item.photo)
+            h.append(f'<article class="card"><h3>{t(p_item.title)}</h3>{body}</article>')
+        h.append("</div></details>")
     if f.followups:
         h += ["<h2>To do after merge</h2>", ul(f.followups)]
     h.append("<h2>What was tested</h2>" + ul(f.tested))
@@ -668,7 +704,7 @@ def _render_page(out: Path, findings: Findings, sub_files: list[str] | None = No
         + "\n</html>\n"
     )
     (out / "report.html").write_text(page)
-    (out / "summary.md").write_text(summary(f))
+    (out / "summary.md").write_text(summary(f, base_url=base_url, root=root))
     files = list(dict.fromkeys(["report.html", *shown, *(sub_files or [])]))
     (out / "report-files.txt").write_text("\n".join(files) + "\n")
     return out / "report.html"
@@ -682,7 +718,7 @@ def render_flow(flow_dir: Path, findings: Findings) -> Path:
     return _render_page(flow_dir, findings)
 
 
-def render_run(out_dir: Path) -> Path:
+def render_run(out_dir: Path, base_url: str | None = None) -> Path:
     """Aggregate out_dir/<flow> for flow in FLOW_ORDER into root report.html, summary.md, and
     report-files.txt. Idempotent: reads only sub-flow files and writes only root files."""
     out_dir = Path(out_dir)
@@ -729,6 +765,7 @@ def render_run(out_dir: Path) -> Path:
         agg.cautions.extend(f"{name}: {x}" for x in sub.cautions)
         agg.changes.extend(_rebase_change(c, flow, name) for c in sub.changes)
         agg.minor.extend(_rebase_change(m, flow, name) for m in sub.minor)
+        agg.proof.extend(_rebase_change(p_item, flow, name) for p_item in sub.proof)
         sub_merged = replace(sub, changes=merge_similar(sub.changes))
         top, rest = headline(sub_merged)
         agg.tested.append(
@@ -748,11 +785,12 @@ def render_run(out_dir: Path) -> Path:
         for line in (out_dir / flow / "report-files.txt").read_text().splitlines()
         if line.strip()
     ]
-    return _render_page(out_dir, agg, sub_files=sub_files)
+    return _render_page(out_dir, agg, sub_files=sub_files, base_url=base_url)
 
 
-def summary(f: Findings) -> str:
-    """Markdown for the CI run page and the PR comment: the result and one line per finding."""
+def summary(f: Findings, base_url: str | None = None, root: Path | None = None) -> str:
+    """Markdown for the CI run page and the PR comment: the result, one line per finding, and
+    (when base_url is provided) a link to the hosted HTML report plus inline PNG previews."""
 
     def md(s: str) -> str:
         """Text from the code under test must not become links or markup in a comment; code spans
@@ -760,18 +798,66 @@ def summary(f: Findings) -> str:
         parts = re.split(r"(`[^`]*`)", str(s))
         return "".join(x if x.startswith("`") else re.sub(r"([\\\[\]<>!*_|#])", r"\\\1", x) for x in parts)
 
+    base = base_url.rstrip("/") if base_url else None
+    resolved_root = root.resolve() if root else None
+
+    def safe_img_url(rel: str | None) -> str | None:
+        if not base or not rel:
+            return None
+        if resolved_root is not None:
+            p = (resolved_root / rel).resolve()
+            if not p.is_relative_to(resolved_root) or p.suffix != ".png" or not p.is_file():
+                return None
+            rel = str(p.relative_to(resolved_root))
+        elif not rel.endswith(".png") or rel.startswith("/") or ".." in Path(rel).parts:
+            return None
+        return f"{base}/{quote(rel, safe='/-._~')}"
+
+    def compare_table(rows: list[CompareRow], limit: int = 2) -> list[str]:
+        rendered: list[tuple[str | None, str | None, str | None]] = []
+        for r in rows:
+            bu, au, mu = safe_img_url(r.before), safe_img_url(r.after), safe_img_url(r.marked)
+            if bu or au or mu:
+                rendered.append((bu, au, mu))
+                if len(rendered) >= limit:
+                    break
+        if not rendered:
+            return []
+        has_marked = any(mu for _, _, mu in rendered)
+        cols = ["Before", "After", "Diff"] if has_marked else ["Before", "After"]
+        out_lines = [
+            "| " + " | ".join(cols) + " |",
+            "| " + " | ".join(["---"] * len(cols)) + " |",
+        ]
+        for bu, au, mu in rendered:
+            cells = [f"![before]({bu})" if bu else "—", f"![after]({au})" if au else "—"]
+            if has_marked:
+                cells.append(f"![diff]({mu})" if mu else "—")
+            out_lines.append("| " + " | ".join(cells) + " |")
+        return out_lines
+
     f_merged = replace(f, changes=merge_similar(f.changes))
     top, sub = headline(f_merged)
     icon = "❌" if f_merged.broke else "⚠️" if f_merged.incomplete else "✅"
     lines = [f"### {icon} {top} · {sub}", ""]
+    if base:
+        lines += [f"**[Open full HTML report]({base}/report.html)**", ""]
     if f_merged.incomplete:
         lines += [f"- {md(c)}" for c in f_merged.cautions if "could not run" in c] + [""]
     if f_merged.broke:
-        lines += ["**What broke**", ""] + [f"- {md(b.title)}" for b in f_merged.broke] + [""]
+        lines += ["**What broke**", ""]
+        shown_broke = 0
+        for b in f_merged.broke:
+            lines.append(f"- {md(b.title)}")
+            if base and shown_broke < 3 and (tbl := compare_table(b.compare, limit=2)):
+                lines += ["", *tbl, ""]
+                shown_broke += 1
+        lines.append("")
     if f_merged.fixed:
         lines += ["**Fixed by this PR**", ""] + [f"- {md(x)}" for x in f_merged.fixed] + [""]
     if f_merged.changes:
         lines += ["**What changed on the device**", ""]
+        shown_chg = 0
         for c in f_merged.changes:
             at = (
                 f" in `{c.where[0]}`" + (f" and {len(c.where) - 1} more" if len(c.where) > 1 else "")
@@ -779,7 +865,30 @@ def summary(f: Findings) -> str:
                 else ""
             )
             lines.append(f"- {md(c.title)}{md(at)}")
+            if base and shown_chg < 3 and (tbl := compare_table(c.compare, limit=2)):
+                lines += ["", *tbl, ""]
+                shown_chg += 1
         lines.append("")
+    if base and f_merged.proof:
+        proof_imgs: list[tuple[str, str]] = []
+        for p_item in f_merged.proof:
+            for r in p_item.compare:
+                if url := safe_img_url(r.after or r.before):
+                    proof_imgs.append((r.label or p_item.title, url))
+                    break
+            if len(proof_imgs) >= 4:
+                break
+        if proof_imgs:
+            lines += [
+                "<details><summary>Proof screenshots from passing flows</summary>",
+                "",
+                "| Flow / Step | Screenshot |",
+                "| --- | --- |",
+                *(f"| {md(lbl)} | ![proof]({url}) |" for lbl, url in proof_imgs),
+                "",
+                "</details>",
+                "",
+            ]
     if f_merged.known:
         n_known = plural(len(f_merged.known), "problem")
         lines += [f"{n_known} already there before this PR (not caused by it): see the report.", ""]

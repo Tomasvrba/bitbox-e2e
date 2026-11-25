@@ -325,6 +325,16 @@ def render(out: Path) -> Findings:
             )
         elif dev or app_changed:
             findings.minor.append(ScreenChange(title=f"`{name}`", compare=dev + app_rows))
+        if dapp_ok(h):
+            step_proof = [
+                CompareRow(label=f"App: {s['label']}", after=f"head/app/{s['file']}", photo=True)
+                for s in (h or {}).get("app", [])
+            ] + [
+                CompareRow(label=f"Device #{idx + 1}", after=f"head/device/{fr['file']}")
+                for idx, fr in enumerate(step_frames(fh, name))
+            ]
+            if step_proof:
+                findings.proof.append(ScreenChange(title=what, where=[name], compare=step_proof))
     eb, eh = meta["base"].get("error"), meta["head"].get("error")
     if eh and not eb:
         findings.broke.append(

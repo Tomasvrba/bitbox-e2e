@@ -289,6 +289,24 @@ def pr_findings(out: Path) -> Findings:
             f.minor.append(
                 ScreenChange(title=f"`{uid}`", compare=graphical_compare(out, b, h, u["slug"]))
             )
+        if u["head_ok"] and u["graphical"]:
+            frames_path = out / h / "graphical" / "frames.json"
+            if frames_path.exists():
+                frames = [x for x in json.loads(frames_path.read_text()) if x["step"] not in SETUP_STEPS]
+                if frames:
+                    f.proof.append(
+                        ScreenChange(
+                            title=f"`{uid}`",
+                            where=[uid],
+                            compare=[
+                                CompareRow(
+                                    label=f"{fr['step']} #{idx + 1}",
+                                    after=f"{h}/graphical/{fr['file']}",
+                                )
+                                for idx, fr in enumerate(frames)
+                            ],
+                        )
+                    )
 
     for uid in pr["removed"]:
         f.changes.append(ScreenChange(title=f"Scenario `{uid}` was removed", where=[uid]))

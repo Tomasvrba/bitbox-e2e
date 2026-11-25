@@ -11,12 +11,13 @@ on:
   pull_request_target:
     types: [labeled]
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   e2e:
     if: github.event.label.name == 'run-e2e'
+    permissions:
+      contents: write
     # Update owner/repo if bitbox-e2e moves to BitBoxSwiss/bitbox-e2e.
     uses: Tomasvrba/bitbox-e2e/.github/workflows/pr.yml@main
     with:
@@ -25,6 +26,10 @@ jobs:
       head: ${{ github.event.pull_request.head.sha }}
       head_repo: ${{ github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.head.repo.full_name || '' }}
       pr_body: ${{ github.event.pull_request.body || '' }}
+    secrets:
+      # Optional: PAT with contents:write on bitbox-e2e to host reports on bitbox-e2e's gh-pages
+      # instead of this repo's gh-pages.
+      pages_token: ${{ secrets.E2E_PAGES_TOKEN }}
 
   comment:
     needs: e2e

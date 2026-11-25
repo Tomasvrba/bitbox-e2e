@@ -318,6 +318,17 @@ def render(out: Path) -> Findings:
             findings.changes.append(
                 ScreenChange(title=f'Screens changed in step "{text}"', where=[step], compare=rows)
             )
+        if step not in SETUP_STEPS and rh == "ok":
+            step_proof = [
+                CompareRow(label=f"Rabby: {s['what']}", after=f"head/{s['file']}", photo=True)
+                for s in h["shots"]
+                if s["step"] == step and s["what"] != "dapp"
+            ] + [
+                CompareRow(label=f"Device #{idx + 1}", after=f"head/{fr['file']}")
+                for idx, fr in enumerate(x for x in h["frames"] if x["step"] == step)
+            ]
+            if step_proof:
+                findings.proof.append(ScreenChange(title=f'"{text}" (`{step}`)', where=[step], compare=step_proof))
     if not findings.broke and b["meta"].get("ok") and not h["meta"].get("ok"):
         err = h["meta"].get("error") or "The Rabby flow exited with an error before completing."
         findings.broke.append(

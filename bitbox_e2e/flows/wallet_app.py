@@ -273,6 +273,7 @@ def render(out: Path) -> list[str]:
         findings.fixed.append(
             "The BitBoxApp backend builds again (it did not before this PR, so the tests ran only with it)."
         )
+    proof_rows: list[CompareRow] = []
     for title in dict.fromkeys([*tb, *th]):
         b, h = tb.get(title), th.get(title)
         if not b or not h:
@@ -298,13 +299,20 @@ def render(out: Path) -> list[str]:
             )
         elif b["status"] != "passed" and h["status"] == "passed":
             findings.fixed.append(f"Test `{title}`: {b['status']} before this PR, passes with it.")
+            if h.get("screenshot"):
+                proof_rows.append(CompareRow(label=title, after=f"head/{h['screenshot']}", photo=True))
         elif b["status"] != "passed" and h["status"] != "passed":
             first = next((line for line in strip_ansi(h.get("error") or "").splitlines() if line.strip()), "")
             findings.known.append(
                 f"Test `{title}` fails before and after this PR" + (f": {first[:160]}" if first else "")
             )
-        elif pairs:
-            findings.changes.append(ScreenChange(title=report.change_title(pairs), where=[title], screens=pairs))
+        else:
+            if pairs:
+                findings.changes.append(ScreenChange(title=report.change_title(pairs), where=[title], screens=pairs))
+            if h.get("screenshot"):
+                proof_rows.append(CompareRow(label=title, after=f"head/{h['screenshot']}", photo=True))
+    if proof_rows:
+        findings.proof.append(ScreenChange(title="Passing BitBoxApp tests", compare=proof_rows, photo=True))
     added, removed = ([t for t in th if t not in tb], [t for t in tb if t not in th]) if not (eb or eh) else ([], [])
     passed = {s: f"{meta[s]['passed']} of {meta[s]['total']}" for s in meta}
     findings.tested = [

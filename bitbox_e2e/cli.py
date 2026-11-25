@@ -129,7 +129,7 @@ def cmd_pr(args) -> int:
     return rc
 
 
-def render_report(out: Path) -> Path:
+def render_report(out: Path, base_url: str | None = None) -> Path:
     """Re-render every present out/<flow> that does not have flow-error.json, then aggregate."""
     out = Path(out)
     for flow in FLOW_ORDER:
@@ -158,7 +158,7 @@ def render_report(out: Path) -> Path:
     )
     if not has_any:
         sys.exit(f"{out}: not the --out directory of e2e pr")
-    page = report.render_run(out)
+    page = report.render_run(out, base_url=base_url)
     log(f"report: {page}")
     print(page)
     return page
@@ -233,6 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rp = sub.add_parser("report", help="render report.html and summary.md again from a pr --out directory")
     rp.add_argument("dir")
+    rp.add_argument("--base-url", help="public base URL where this report directory is hosted (enables inline images)")
 
     fl = sub.add_parser("flows", help="the flows a change in repo runs, as a JSON list (for the CI job matrix)")
     fl.add_argument("repo", choices=FLOWS)
@@ -263,7 +264,7 @@ def dispatch(args) -> int:
             print(json.dumps(list(FLOWS[args.repo])))
         return 0
     if args.cmd == "report":
-        render_report(Path(args.dir))
+        render_report(Path(args.dir), base_url=args.base_url)
         return 0
     if args.cmd == "record-rabby":
         from bitbox_e2e.flows import rabby
