@@ -446,62 +446,151 @@ def headline(f: Findings) -> tuple[str, str]:
 
 
 CSS = """
-:root{--bg:#f6f7f9;--card:#fff;--fg:#1b1f24;--muted:#5b6470;--line:#d9dde3;--code:#eef1f4;
---bad:#b42318;--bad-bg:#fdecea;--ok:#1a7f37;--ok-bg:#e8f5ec;--warn:#9a6700;--warn-bg:#fff6dd;--accent:#2f6feb}
-@media (prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#171a20;--fg:#e6e8eb;--muted:#9aa3ad;
---line:#2a2f37;--code:#232830;--bad:#ff7b72;--bad-bg:#3a1714;--ok:#56d364;--ok-bg:#12301b;
---warn:#e3b341;--warn-bg:#33290d;--accent:#6ea8fe}}
+:root{
+--bg:#111214;--surface:#191b1f;--surface-2:#22252b;--line:#2e323a;--line-strong:#3f4550;
+--fg:#f2f3f5;--fg-2:#c7ccd4;--muted:#8d95a2;--code:#14161a;
+--accent:#4b96ff;--accent-bg:rgba(75,150,255,.14);
+--ok:#36b37e;--ok-bg:rgba(54,179,126,.14);--ok-fg:#7ce0b2;
+--bad:#f06a6a;--bad-bg:rgba(240,106,106,.14);--bad-fg:#ff9d9d;
+--warn:#e3a936;--warn-bg:rgba(227,169,54,.15);--warn-fg:#f6ce74;
+--mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,monospace
+}
+@media (prefers-color-scheme:light){:root{
+--bg:#f4f5f7;--surface:#ffffff;--surface-2:#f8f9fb;--line:#dfe3ea;--line-strong:#c5ccd7;
+--fg:#15181d;--fg-2:#373f4a;--muted:#5c6574;--code:#eef1f5;
+--accent:#1f6feb;--accent-bg:rgba(31,111,235,.10);
+--ok:#1a7f37;--ok-bg:rgba(26,127,55,.10);--ok-fg:#14682c;
+--bad:#c62828;--bad-bg:rgba(198,40,40,.09);--bad-fg:#a51d1d;
+--warn:#9a6700;--warn-bg:rgba(154,103,0,.11);--warn-fg:#7d5300
+}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
-main{max-width:1100px;margin:0 auto;padding:24px 16px 64px}
-a{color:var(--accent)}
-code,pre{font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--code);border-radius:4px}
-code{padding:1px 4px;overflow-wrap:anywhere}
-pre{padding:10px 12px;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0}
-.eyebrow{color:var(--muted);font-size:13px;letter-spacing:.04em;text-transform:uppercase}
-h1{font-size:26px;line-height:1.25;margin:4px 0 6px}
-h2{font-size:19px;margin:32px 0 10px}
-h3{font-size:16px;margin:0}
-.meta{color:var(--muted);font-size:14px}
-.banner{margin:20px 0;padding:16px 18px;border-radius:8px;border:1px solid}
-.banner .big{font-size:22px;font-weight:650}
-.banner.fail{background:var(--bad-bg);border-color:var(--bad);color:var(--bad)}
-.banner.pass{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
-.banner.warn{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
-.banner .sub{color:var(--fg)}
-.callout{padding:10px 14px;border-left:4px solid var(--warn);background:var(--warn-bg);border-radius:4px;margin:10px 0}
-.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:12px 0}
+body{margin:0;background:var(--bg);color:var(--fg);
+font:15px/1.55 Inter,system-ui,-apple-system,Segoe UI,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:1160px;margin:0 auto;padding:36px 22px 72px}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+code,pre{font:13px/1.5 var(--mono);background:var(--code);border-radius:6px}
+code{padding:2px 6px;overflow-wrap:anywhere;border:1px solid var(--line)}
+pre{padding:12px 14px;overflow-x:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0;
+border:1px solid var(--line);color:var(--fg-2)}
+
+/* Header & hero */
+header{margin-bottom:22px}
+.eyebrow{color:var(--accent);font-size:12px;letter-spacing:.12em;text-transform:uppercase;font-weight:700}
+h1{font-size:30px;line-height:1.18;letter-spacing:-.02em;margin:6px 0 10px}
+.sides-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;color:var(--muted);font-size:13px}
+.sides-bar .arrow{color:var(--accent);font-weight:700}
+.side-chip{background:var(--surface);border:1px solid var(--line);border-radius:99px;padding:4px 11px;color:var(--fg-2)}
+.side-chip b{color:var(--fg);font-weight:600}
+
+.hero{margin:18px 0 22px;padding:20px 22px;border-radius:14px;border:1px solid;
+display:flex;flex-direction:column;gap:14px}
+.hero.fail{background:var(--bad-bg);border-color:var(--bad)}
+.hero.pass{background:var(--ok-bg);border-color:var(--ok)}
+.hero.warn{background:var(--warn-bg);border-color:var(--warn)}
+.hero-top{display:flex;gap:14px;align-items:baseline;justify-content:space-between;flex-wrap:wrap}
+.hero .big{font-size:24px;font-weight:750;letter-spacing:-.015em}
+.hero.fail .big{color:var(--bad-fg)}.hero.pass .big{color:var(--ok-fg)}.hero.warn .big{color:var(--warn-fg)}
+.hero .sub{color:var(--fg-2);font-size:15px}
+
+/* Flow scorecard */
+.scorecard{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.flow-tile{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+padding:12px 14px;display:flex;flex-direction:column;gap:6px}
+.flow-tile.fail{border-color:var(--bad)}.flow-tile.warn{border-color:var(--warn)}
+.flow-tile.changed{border-color:var(--accent)}.flow-tile.pass{border-color:var(--ok)}
+.flow-tile-head{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.flow-tile-name{font-weight:700;font-size:14px;color:var(--fg)}
+.flow-tile-sub{font-size:13px;color:var(--muted);line-height:1.35;flex:1}
+.flow-tile-foot{font-size:12px;margin-top:2px}
+
+/* Pills & section headers */
+.pill{font:600 11.5px/1 var(--mono);padding:4px 9px;border-radius:99px;display:inline-flex;align-items:center;
+letter-spacing:.02em;white-space:nowrap}
+.pill.bad{background:var(--bad-bg);color:var(--bad-fg);border:1px solid var(--bad)}
+.pill.good{background:var(--ok-bg);color:var(--ok-fg);border:1px solid var(--ok)}
+.pill.warn{background:var(--warn-bg);color:var(--warn-fg);border:1px solid var(--warn)}
+.pill.acc{background:var(--accent-bg);color:var(--accent);border:1px solid var(--accent)}
+.pill.muted{background:var(--surface-2);color:var(--muted);border:1px solid var(--line)}
+
+h2{font-size:20px;letter-spacing:-.01em;margin:34px 0 6px;display:flex;align-items:center;gap:10px}
+h3{font-size:17px;line-height:1.35;margin:0;letter-spacing:-.01em}
+.sec-sub{color:var(--muted);font-size:14px;margin:0 0 14px}
+.callout{padding:11px 15px;border-left:4px solid var(--warn);background:var(--warn-bg);
+border-radius:8px;margin:10px 0;color:var(--fg)}
+
+/* Finding cards */
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
 .card.bad{border-left:4px solid var(--bad)}
-.card-head{display:flex;gap:10px;align-items:baseline;justify-content:space-between;flex-wrap:wrap}
-.muted,.where{color:var(--muted);font-size:14px}
-.pairs{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
-.pairs .h{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-.screen{background:var(--code);border-radius:6px;padding:8px 10px;white-space:pre-line;font-size:14px}
-.screen .kind{font-size:11px;color:var(--muted);text-transform:uppercase}
-.screen .t{font-weight:650}
+.card.chg{border-left:4px solid var(--accent)}
+.card-head{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:6px}
+.card-title-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.card-detail{color:var(--fg-2);margin:6px 0 10px;font-size:14.5px}
+.muted,.where{color:var(--muted);font-size:13.5px;margin:4px 0 8px}
+
+/* Screen text diffs */
+.pairs{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}
+.pairs .h{font:700 11px/1 var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.screen{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:10px 12px;
+white-space:pre-line;font-size:13.5px}
+.screen.before{border-left:3px solid var(--bad)}.screen.after{border-left:3px solid var(--ok)}
+.screen .kind{font:600 11px/1 var(--mono);color:var(--muted);text-transform:uppercase;margin-bottom:4px}
+.screen .t{font-weight:700;color:var(--fg);margin-bottom:2px}
 .screen .k{color:var(--muted)}
-.absent{color:var(--muted);font-style:italic;padding:8px 10px;border:1px dashed var(--line);
-border-radius:6px;text-align:center}
-.cmp{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:10px 0;align-items:start}
-.cmp .h{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.absent{color:var(--muted);font-style:italic;padding:14px 10px;border:1px dashed var(--line-strong);
+border-radius:8px;text-align:center;font-size:13px}
+
+/* Visual comparison grids */
+.cmp{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:12px 0;align-items:start}
 .cmp.two{grid-template-columns:repeat(2,minmax(0,1fr))}
-.cmp .label{grid-column:1/-1;font-weight:600;font-size:14px;margin-top:6px}
-.cmp img{width:100%;height:auto;display:block;border-radius:4px;border:1px solid var(--line);image-rendering:pixelated}
-.cmp img.photo{image-rendering:auto}
-.filmstrip{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;
-margin:10px 0;align-items:start}
-.filmstrip figure{margin:0;display:flex;flex-direction:column;gap:4px}
-.filmstrip figcaption{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
-.filmstrip img{width:100%;height:auto;display:block;border-radius:4px;border:1px solid var(--line);
-image-rendering:pixelated}
-.filmstrip img.photo{image-rendering:auto}
-details{margin:10px 0}summary{cursor:pointer;font-weight:600}
-details>div{padding:4px 0 0 16px}
-table{border-collapse:collapse;font-size:14px;margin:8px 0;display:block;overflow-x:auto}
-td,th{border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}
-ul{padding-left:20px}li{margin:3px 0}
-@media (max-width:640px){.screen{font-size:12px;padding:6px}}
+.cmp .h{font:700 11px/1 var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.cmp .label{grid-column:1/-1;font-weight:650;font-size:13.5px;color:var(--fg-2);margin-top:6px}
+.cmp img{width:100%;height:auto;display:block;border-radius:8px;border:2px solid var(--line-strong);
+image-rendering:pixelated;background:#000}
+.cmp img.photo{image-rendering:auto;border-width:1px;background:var(--code)}
+.cmp img.after-ok{border-color:var(--ok)}.cmp img.diff-hit{border-color:var(--bad)}
+
+/* Passing proof filmstrip */
+.filmstrip{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;
+margin:12px 0;align-items:start}
+.filmstrip figure{margin:0;display:flex;flex-direction:column;gap:6px;background:var(--surface-2);
+border:1px solid var(--line);border-radius:9px;padding:8px}
+.filmstrip figcaption{font-size:12.5px;color:var(--fg-2);overflow-wrap:anywhere}
+.filmstrip img{width:100%;height:auto;display:block;border-radius:6px;border:1px solid var(--line-strong);
+image-rendering:pixelated;background:#000}
+.filmstrip img.photo{image-rendering:auto;background:var(--code)}
+
+/* Collapsible reference drawers */
+details{margin:10px 0;background:var(--surface-2);border:1px solid var(--line);border-radius:10px;padding:8px 14px}
+details[open]{padding-bottom:12px}
+summary{cursor:pointer;font-weight:600;font-size:14px;color:var(--fg);list-style:none;
+display:flex;align-items:center;gap:8px}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";color:var(--accent);font-size:12px;transition:transform .15s}
+details[open]>summary::before{transform:rotate(90deg)}
+details>div{padding:8px 0 0}
+.card details{background:var(--code);margin:10px 0 0}
+.ref-section{margin-top:34px;padding-top:18px;border-top:1px solid var(--line)}
+
+table{border-collapse:collapse;font-size:13.5px;margin:8px 0;width:100%;display:block;overflow-x:auto}
+td,th{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+th{background:var(--surface);color:var(--fg);font-weight:650}
+ul{padding-left:20px;margin:6px 0}li{margin:4px 0;color:var(--fg-2)}
+@media (max-width:680px){
+  main{padding:20px 14px 48px}
+  h1{font-size:23px}
+  .pairs,.cmp,.cmp.two{grid-template-columns:1fr}
+  .screen{font-size:12.5px;padding:8px}
+}
 """
+
+
+def _split_flow_prefix(title: str) -> tuple[str | None, str]:
+    """Split 'WalletConnect: ...' into ('WalletConnect', '...') when the prefix is a known flow name."""
+    for name in FLOW_NAMES.values():
+        prefix = f"{name}: "
+        if title.startswith(prefix):
+            return name, title[len(prefix) :]
+    return None, title
 
 
 def _render_page(
@@ -509,6 +598,7 @@ def _render_page(
     findings: Findings,
     sub_files: list[str] | None = None,
     base_url: str | None = None,
+    flow_cards: list[dict] | None = None,
 ) -> Path:
     """Writes report.html, summary.md and report-files.txt (the page and every image it shows, for
     a publish step) into out. Images outside out, or not PNG files, are left out."""
@@ -523,7 +613,7 @@ def _render_page(
         s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
         return re.sub(r"\b((?:device|app|wc|rabby)/report\.html)\b", r'<a href="\1">\1</a>', s)
 
-    def img(rel: str | None, alt: str, photo: bool = False) -> str:
+    def img(rel: str | None, alt: str, photo: bool = False, extra_cls: str = "") -> str:
         if not rel:
             return '<div class="absent">none</div>'
         p = (root / rel).resolve()
@@ -532,10 +622,11 @@ def _render_page(
         rel_str = str(p.relative_to(root))
         r = html.escape(rel_str)
         shown.append(rel_str)
-        cls = ' class="photo"' if photo else ""
+        classes = " ".join(c for c in ("photo" if photo else "", extra_cls) if c)
+        cls = f' class="{classes}"' if classes else ""
         return f'<a href="{r}" target="_blank"><img src="{r}" alt="{html.escape(alt)}"{cls} loading="lazy"></a>'
 
-    def screen(s: dict | None) -> str:
+    def screen(s: dict | None, side_cls: str = "") -> str:
         if s is None:
             return '<div class="absent">no screen</div>'
         fields = dict(s["fields"])
@@ -544,12 +635,13 @@ def _render_page(
         if title:
             body.append(f'<div class="t">{t(title)}</div>')
         body += [f'<div><span class="k">{t(k.lower())}:</span> {t(v)}</div>' for k, v in fields.items()]
-        return '<div class="screen">' + "".join(body) + "</div>"
+        cls = f"screen {side_cls}".strip()
+        return f'<div class="{cls}">' + "".join(body) + "</div>"
 
     def pairs(screens: list[list[dict | None]]) -> str:
         h = ['<div class="pairs"><div class="h">Device screen before</div><div class="h">After</div>']
         for a, b in screens:
-            h += [screen(a), screen(b)]
+            h += [screen(a, "before"), screen(b, "after")]
         return "".join(h) + "</div>"
 
     def compare(rows: list[CompareRow], photo: bool = False) -> str:
@@ -557,7 +649,7 @@ def _render_page(
             return ""
         marked = any(r.marked for r in rows)
         heads = '<div class="h">Before</div><div class="h">After</div>' + (
-            '<div class="h">Change marked</div>' if marked else ""
+            '<div class="h">Changed (red)</div>' if marked else ""
         )
         h = [f'<div class="cmp{"" if marked else " two"}">']
         for i, r in enumerate(rows):
@@ -566,9 +658,9 @@ def _render_page(
             if i == 0:
                 h.append(heads)
             ph = photo or r.photo
-            h += [img(r.before, "before", ph), img(r.after, "after", ph)]
+            h += [img(r.before, "before", ph), img(r.after, "after", ph, "after-ok" if not ph else "")]
             if marked:
-                h.append(img(r.marked, "marked", ph) if r.marked else "<div></div>")
+                h.append(img(r.marked, "marked", ph, "diff-hit") if r.marked else "<div></div>")
         return "".join(h) + "</div>"
 
     def filmstrip(rows: list[CompareRow], photo: bool = False) -> str:
@@ -586,10 +678,18 @@ def _render_page(
         lines = text.splitlines()
         pre = f"<pre>{html.escape(text)}</pre>"
         return (
-            pre
-            if len(lines) <= 12
-            else f"<details><summary>Error output ({len(lines)} lines)</summary>{pre}</details>"
+            f"<details><summary>Advanced output &amp; trace ({plural(len(lines), 'line')})</summary>"
+            f"<div>{pre}</div></details>"
         )
+
+    def card_title(raw_title: str, pill_cls: str) -> str:
+        flow_name, rest = _split_flow_prefix(raw_title)
+        if flow_name:
+            return (
+                f'<div class="card-title-row"><span class="pill {pill_cls}">{t(flow_name)}</span>'
+                f"<h3>{t(rest)}</h3></div>"
+            )
+        return f"<h3>{t(raw_title)}</h3>"
 
     def ul(items) -> str:
         return "<ul>" + "".join(f"<li>{t(i)}</li>" for i in items) + "</ul>"
@@ -599,103 +699,150 @@ def _render_page(
     banner = "fail" if f.broke else "warn" if f.incomplete else "pass"
     h = [
         "<main><header>",
-        f'<div class="eyebrow">BitBox e2e · {t(f.repo)}</div>',
+        f'<div class="eyebrow">BitBox e2e · {t(f.repo or "report")}</div>',
         f"<h1>{t(f.title)}</h1>",
     ]
-    meta = []
     if f.sides:
-        meta.append(f'before: {t(f.sides["base"])} → after: {t(f.sides["head"])}')
-    h += [f'<div class="meta">{" · ".join(meta)}</div>', "</header>"]
-    extra = f" · {plural(len(f.known), 'problem')} already there before this PR" if f.known else ""
+        h.append(
+            '<div class="sides-bar">'
+            f'<span class="side-chip"><b>Before</b> {t(f.sides["base"])}</span>'
+            '<span class="arrow">→</span>'
+            f'<span class="side-chip"><b>After</b> {t(f.sides["head"])}</span>'
+            "</div>"
+        )
+    h.append("</header>")
+
+    extra = f" · {plural(len(f.known), 'pre-existing issue')}" if f.known else ""
     h.append(
-        f'<section class="banner {banner}"><div class="big">{t(top)}</div>'
-        f'<div class="sub">{t(sub[0].upper() + sub[1:])}{t(extra)}</div></section>'
+        f'<section class="hero {banner}"><div class="hero-top">'
+        f'<div class="big">{t(top)}</div>'
+        f'<div class="sub">{t(sub[0].upper() + sub[1:])}{t(extra)}</div></div>'
     )
+    if flow_cards:
+        h.append('<div class="scorecard">')
+        for fc in flow_cards:
+            st = fc["status"]
+            pill_cls = {"fail": "bad", "warn": "warn", "changed": "acc", "pass": "good"}.get(st, "muted")
+            href = fc.get("href")
+            link = f'<a href="{html.escape(href)}">Open flow report →</a>' if href else "See workflow log"
+            h.append(
+                f'<div class="flow-tile {st}">'
+                f'<div class="flow-tile-head"><span class="flow-tile-name">{t(fc["name"])}</span>'
+                f'<span class="pill {pill_cls}">{t(fc["badge"])}</span></div>'
+                f'<div class="flow-tile-sub">{t(fc["detail"])}</div>'
+                f'<div class="flow-tile-foot">{link}</div></div>'
+            )
+        h.append("</div>")
+    h.append("</section>")
+
     h += [f'<div class="callout">{t(c)}</div>' for c in f.cautions]
 
     if f.broke:
-        h.append("<h2>What broke</h2><p class=muted>Each of these passed before this PR and fails with it.</p>")
+        h.append(
+            f'<h2>What broke <span class="pill bad">{plural(len(f.broke), "regression")}</span></h2>'
+            '<p class="sec-sub">Passed before this PR and fails with it. Expand trace blocks for raw test output.</p>'
+        )
         for b in f.broke:
-            h.append(f'<article class="card bad"><h3>{t(b.title)}</h3>')
+            h.append(f'<article class="card bad"><div class="card-head">{card_title(b.title, "bad")}</div>')
             if b.detail:
-                h.append(f"<p>{t(b.detail)}</p>")
-            if b.excerpt:
-                h.append(excerpt(b.excerpt))
+                h.append(f'<p class="card-detail">{t(b.detail)}</p>')
+            h.append(compare(b.compare, b.photo))
             if b.screens:
                 h.append(
-                    f"<details><summary>Device screens that differ: {len(b.screens)}</summary>"
-                    f"{pairs(b.screens)}</details>"
+                    f"<details><summary>Device screen text diff ({len(b.screens)})</summary>"
+                    f"<div>{pairs(b.screens)}</div></details>"
                 )
-            h.append(compare(b.compare, b.photo) + "</article>")
+            if b.excerpt:
+                h.append(excerpt(b.excerpt))
+            h.append("</article>")
+
+    if f.changes:
+        h.append(
+            f'<h2>What changed on the device <span class="pill acc">{plural(len(f.changes), "change")}</span></h2>'
+            '<p class="sec-sub">Device screens and wallet views that changed while tests still passed.</p>'
+        )
+        for c in f.changes:
+            h.append(f'<article class="card chg"><div class="card-head">{card_title(c.title, "acc")}</div>')
+            if c.where:
+                more = f" and {len(c.where) - 1} more" if len(c.where) > 1 else ""
+                h.append(f'<p class="where">Where: {t(f"`{c.where[0]}`")}{t(more)}</p>')
+            h.append(compare(c.compare, c.photo))
+            if c.screens:
+                h.append(pairs(c.screens))
+            h += [f'<p class="muted">{t(n)}</p>' for n in c.notes]
+            if len(c.where) > 1:
+                items_html = ul(f"`{w}`" for w in c.where)
+                h.append(
+                    f"<details><summary>All affected scenarios ({len(c.where)})</summary>"
+                    f"<div>{items_html}</div></details>"
+                )
+            if c.variants:
+                h.append(
+                    f"<details><summary>Other value variants of this change ({len(c.variants)})"
+                    "</summary><div>"
+                )
+                for v in c.variants:
+                    h.append(f'<p class="where">In {", ".join(t(f"`{w}`") for w in v.where)}:</p>')
+                    if v.screens:
+                        h.append(pairs(v.screens))
+                    h.append(compare(v.compare, v.photo))
+                h.append("</div></details>")
+            h.append("</article>")
+    else:
+        h.append(
+            '<h2>What changed on the device <span class="pill good">No changes</span></h2>'
+            '<p class="sec-sub">No device screen is different with this PR.</p>'
+        )
 
     if f.fixed:
         h += [
-            "<h2>Fixed by this PR</h2><p class=muted>Each of these failed before this PR and passes with it.</p>",
-            ul(f.fixed),
+            f'<h2>Fixed by this PR <span class="pill good">{len(f.fixed)}</span></h2>'
+            '<p class="sec-sub">Failed before this PR and passes with it.</p>',
+            f'<div class="card">{ul(f.fixed)}</div>',
         ]
 
-    h.append("<h2>What changed on the device</h2>")
-    if not f.changes:
-        h.append("<p>No device screen is different with this PR.</p>")
-    for c in f.changes:
-        h.append(f'<article class="card"><div class="card-head"><h3>{t(c.title)}</h3></div>')
-        if c.where:
-            more = f" and {len(c.where) - 1} more" if len(c.where) > 1 else ""
-            h.append(f'<p class="where">In {t(f"`{c.where[0]}`")}{t(more)}.</p>')
-            if len(c.where) > 1:
-                items_html = ul(f"`{w}`" for w in c.where)
-                h.append(f"<details><summary>All {len(c.where)}</summary><div>{items_html}</div></details>")
-        if c.screens:
-            h.append(pairs(c.screens))
-        h.append(compare(c.compare, c.photo))
-        h += [f'<p class="muted">{t(n)}</p>' for n in c.notes]
-        if c.variants:
-            h.append(
-                f"<details><summary>The same kind of change with other values: {len(c.variants)} more"
-                "</summary><div>"
-            )
-            for v in c.variants:
-                h.append(f'<p class="where">In {", ".join(t(f"`{w}`") for w in v.where)}:</p>')
-                if v.screens:
-                    h.append(pairs(v.screens))
-                h.append(compare(v.compare, v.photo))
-            h.append("</div></details>")
-        h.append("</article>")
-
-    if f.minor:
-        h.append(
-            f"<details><summary>Pixel-only differences, same screen text: {len(f.minor)} "
-            "(usually capture timing)</summary><div>"
-        )
-        for m in f.minor:
-            h.append(f'<article class="card"><h3>{t(m.title)}</h3>{compare(m.compare, m.photo)}</article>')
-        h.append("</div></details>")
     if f.proof:
+        open_attr = " open" if (not f.broke and not f.changes) else ""
         h.append(
-            f"<details><summary>Proof: screens and screenshots from passing flows ({len(f.proof)})"
+            f"<details{open_attr}><summary>Proof: screens and screenshots from passing flows ({len(f.proof)})"
             "</summary><div>"
         )
         for p_item in f.proof:
             body = filmstrip(p_item.compare, p_item.photo)
-            h.append(f'<article class="card"><h3>{t(p_item.title)}</h3>{body}</article>')
+            head = card_title(p_item.title, "good")
+            h.append(f'<article class="card"><div class="card-head">{head}</div>{body}</article>')
         h.append("</div></details>")
+
     if f.followups:
-        h += ["<h2>To do after merge</h2>", ul(f.followups)]
-    h.append("<h2>What was tested</h2>" + ul(f.tested))
+        h += ["<h2>To do after merge</h2>", f'<div class="card">{ul(f.followups)}</div>']
+
+    # Reference & advanced details — collapsed so the primary deck stays crisp and scannable.
+    h.append('<section class="ref-section"><h2>Reference &amp; advanced details</h2>')
+    if f.tested:
+        h.append(f"<details><summary>What was tested ({len(f.tested)})</summary><div>{ul(f.tested)}</div></details>")
+    if f.minor:
+        h.append(
+            f"<details><summary>Pixel-only differences, same screen text ({len(f.minor)} — usually capture timing)"
+            "</summary><div>"
+        )
+        for m in f.minor:
+            h.append(f'<article class="card"><h3>{t(m.title)}</h3>{compare(m.compare, m.photo)}</article>')
+        h.append("</div></details>")
     if f.known:
         h.append(
-            f"<details><summary>Already failing before this PR: {len(f.known)} (not caused by it)</summary>"
+            f"<details><summary>Already failing before this PR ({len(f.known)} — not caused by this PR)</summary>"
             f"<div>{ul(f.known)}</div></details>"
         )
     if f.details or f.notes:
         rows_html = "".join(f"<tr><th>{t(k)}</th><td>{t(b)}</td><td>{t(a)}</td></tr>" for k, b, a in f.details)
         h.append(
-            "<details><summary>Run details</summary><div>"
+            "<details><summary>Versions, test matrix &amp; log locations</summary><div>"
             + (f"<table><tr><th></th><th>Before</th><th>After</th></tr>{rows_html}</table>" if rows_html else "")
-            + ul(f.notes)
+            + (ul(f.notes) if f.notes else "")
             + "</div></details>"
         )
-    h.append("</main>")
+    h.append("</section></main>")
+
     page_title = html.escape(f"e2e: {f.title}")
     page = (
         f'<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" '
@@ -704,7 +851,7 @@ def _render_page(
         + "\n</html>\n"
     )
     (out / "report.html").write_text(page)
-    (out / "summary.md").write_text(summary(f, base_url=base_url, root=root))
+    (out / "summary.md").write_text(summary(f, base_url=base_url, root=root, flow_cards=flow_cards))
     files = list(dict.fromkeys(["report.html", *shown, *(sub_files or [])]))
     (out / "report-files.txt").write_text("\n".join(files) + "\n")
     return out / "report.html"
@@ -725,6 +872,7 @@ def render_run(out_dir: Path, base_url: str | None = None) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     agg = Findings(title="")
     loaded_flows: list[str] = []
+    flow_cards: list[dict] = []
 
     for flow in FLOW_ORDER:
         d = out_dir / flow
@@ -735,6 +883,16 @@ def render_run(out_dir: Path, base_url: str | None = None) -> Path:
             first = next((line for line in reversed(e["error"].splitlines()) if line.strip()), "no error message")
             agg.cautions.append(f"{name} could not run, so it tested nothing: {first[:300]}")
             agg.incomplete.append(name)
+            flow_cards.append(
+                {
+                    "flow": flow,
+                    "name": name,
+                    "status": "warn",
+                    "badge": "Could not run",
+                    "detail": first[:140],
+                    "href": None,
+                }
+            )
             continue
         p = d / "findings.json"
         if not p.exists():
@@ -771,6 +929,29 @@ def render_run(out_dir: Path, base_url: str | None = None) -> Path:
         agg.tested.append(
             f"{name}: {sub.scope or 'see its report'}. Result: {top}, {rest}. Its own report: {flow}/report.html"
         )
+        if sub_merged.broke:
+            st, badge = "fail", f"{plural(len(sub_merged.broke), 'broke')}"
+            detail = sub_merged.broke[0].title
+        elif sub_merged.changes:
+            st, badge = "changed", plural(len(sub_merged.changes), "screen change")
+            detail = sub_merged.changes[0].title
+        else:
+            st, badge = "pass", "Passed"
+            detail = (
+                plural(len(sub_merged.proof), "proof capture")
+                if sub_merged.proof
+                else "No regressions or screen diffs"
+            )
+        flow_cards.append(
+            {
+                "flow": flow,
+                "name": name,
+                "status": st,
+                "badge": badge,
+                "detail": detail[:140],
+                "href": f"{flow}/report.html",
+            }
+        )
 
     if not agg.title:
         if agg.incomplete:
@@ -785,12 +966,17 @@ def render_run(out_dir: Path, base_url: str | None = None) -> Path:
         for line in (out_dir / flow / "report-files.txt").read_text().splitlines()
         if line.strip()
     ]
-    return _render_page(out_dir, agg, sub_files=sub_files, base_url=base_url)
+    return _render_page(out_dir, agg, sub_files=sub_files, base_url=base_url, flow_cards=flow_cards)
 
 
-def summary(f: Findings, base_url: str | None = None, root: Path | None = None) -> str:
-    """Markdown for the CI run page and the PR comment: the result, one line per finding, and
-    (when base_url is provided) a link to the hosted HTML report plus inline PNG previews."""
+def summary(
+    f: Findings,
+    base_url: str | None = None,
+    root: Path | None = None,
+    flow_cards: list[dict] | None = None,
+) -> str:
+    """Markdown for the CI run page and the PR comment: the result, per-flow status matrix,
+    one line per finding, and (when base_url is provided) hosted HTML report link + inline PNGs."""
 
     def md(s: str) -> str:
         """Text from the code under test must not become links or markup in a comment; code spans
@@ -842,6 +1028,21 @@ def summary(f: Findings, base_url: str | None = None, root: Path | None = None) 
     lines = [f"### {icon} {top} · {sub}", ""]
     if base:
         lines += [f"**[Open full HTML report]({base}/report.html)**", ""]
+    if flow_cards:
+        st_icon = {"fail": "❌", "warn": "⚠️", "changed": "🔎", "pass": "✅"}
+        lines += [
+            "| Flow | Status | Summary |",
+            "| --- | --- | --- |",
+        ]
+        for fc in flow_cards:
+            ic = st_icon.get(fc["status"], "•")
+            flow_lbl = (
+                f"[{md(fc['name'])}]({base}/{fc['href']})"
+                if base and fc.get("href")
+                else md(fc["name"])
+            )
+            lines.append(f"| {flow_lbl} | {ic} {md(fc['badge'])} | {md(fc['detail'])} |")
+        lines.append("")
     if f_merged.incomplete:
         lines += [f"- {md(c)}" for c in f_merged.cautions if "could not run" in c] + [""]
     if f_merged.broke:

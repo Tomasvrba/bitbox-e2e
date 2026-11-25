@@ -45,7 +45,7 @@ step() { echo "==> $*" >&2; }
 # Download to a file and check it before anything unpacks or runs it. On a mismatch the file is
 # deleted and setup stops, so nothing half-installed is left for a rerun to mistake as present.
 fetch() {  # <url> <sha256> <file>
-  curl -fsSL -o "$3" "$1"
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o "$3" "$1"
   local got
   got="$(sha256sum "$3" | cut -d' ' -f1)"
   if [ "$got" != "$2" ]; then

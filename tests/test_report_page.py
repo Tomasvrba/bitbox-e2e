@@ -149,12 +149,17 @@ def test_render_run_aggregates_flows_rebases_images_and_is_idempotent(tmp_path):
     files_text = (tmp_path / "report-files.txt").read_text()
     files = files_text.split()
 
-    assert "Device tests: Changed fee screen" in page
-    assert "WalletConnect: WalletConnect request <code>eth_sendTransaction</code> fails" in page
+    assert '<span class="pill acc">Device tests</span><h3>Changed fee screen</h3>' in page
+    assert (
+        '<span class="pill bad">WalletConnect</span>'
+        "<h3>WalletConnect request <code>eth_sendTransaction</code> fails</h3>" in page
+    )
     assert "Rabby could not run" in page and "RuntimeError: yarn install failed" in page
+    assert 'class="scorecard"' in page
     assert 'src="device/head/fee.png"' in page and 'src="wc/head/s.png"' in page
     assert '<a href="device/report.html">' in page and '<a href="wc/report.html">' in page
     assert "❌" in summary
+    assert "| Flow | Status | Summary |" in summary
     assert "WalletConnect: WalletConnect request" in summary
     assert "Device tests: Changed fee screen" in summary
     assert "Rabby could not run" in summary
@@ -203,7 +208,7 @@ def test_proof_filmstrip_renders_rebases_and_lists_files(tmp_path):
 
     render_run(tmp_path)
     run_page = (tmp_path / "report.html").read_text()
-    assert "BitBoxApp tests: Passing BitBoxApp screenshots" in run_page
+    assert '<span class="pill good">BitBoxApp tests</span><h3>Passing BitBoxApp screenshots</h3>' in run_page
     assert 'src="app/head/home.png"' in run_page
     assert "app/head/home.png" in (tmp_path / "report-files.txt").read_text().split()
 
