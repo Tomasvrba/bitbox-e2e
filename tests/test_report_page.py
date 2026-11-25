@@ -276,7 +276,8 @@ def test_cli_report_accepts_base_url(tmp_path):
             proof=[ScreenChange(title="btc/ok", compare=[CompareRow(label="screen 1", after="head/s.png")])],
         ),
     )
-    assert dispatch(build_parser().parse_args(["report", str(tmp_path), "--base-url", "https://example.test/runs/9"])) == 0
+    args = build_parser().parse_args(["report", str(tmp_path), "--base-url", "https://example.test/runs/9"])
+    assert dispatch(args) == 0
     md = (tmp_path / "summary.md").read_text()
     assert "https://example.test/runs/9/report.html" in md
     assert "https://example.test/runs/9/device/head/s.png" in md
