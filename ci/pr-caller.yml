@@ -22,9 +22,9 @@ jobs:
     uses: Tomasvrba/bitbox-e2e/.github/workflows/pr.yml@main
     with:
       repo: firmware  # change per repo: firmware | app | api-rs | api-go | api-ts | rabby
-      base: ${{ github.event.pull_request.base.ref }}
+      base: ${{ github.event.pull_request.base.sha }}
       head: ${{ github.event.pull_request.head.sha }}
-      head_repo: ${{ github.event.pull_request.head.repo.full_name != github.repository && github.event.pull_request.head.repo.full_name || '' }}
+      head_repo: ${{ github.event.pull_request.head.repo.full_name }}
       pr_body: ${{ github.event.pull_request.body || '' }}
     secrets:
       # Optional: PAT with contents:write on bitbox-e2e to host reports on bitbox-e2e's gh-pages
