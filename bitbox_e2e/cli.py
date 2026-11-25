@@ -236,6 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     fl = sub.add_parser("flows", help="the flows a change in repo runs, as a JSON list (for the CI job matrix)")
     fl.add_argument("repo", choices=FLOWS)
+    fl.add_argument("--pr-body", metavar="FILE", help="PR description file to read flow checkboxes from")
 
     rr = sub.add_parser("record-rabby", help="re-record Rabby API fixture (rabby/fixtures/rabby-api.json.gz)")
     rr.add_argument("--firmware", required=True, help="firmware ref or WORKTREE")
@@ -255,7 +256,11 @@ def dispatch(args) -> int:
     if args.cmd == "pr":
         return cmd_pr(args)
     if args.cmd == "flows":
-        print(json.dumps(list(FLOWS[args.repo])))
+        if args.pr_body:
+            body = Path(args.pr_body).read_text()
+            print(json.dumps(config.parse_pr_checkboxes(body, args.repo)))
+        else:
+            print(json.dumps(list(FLOWS[args.repo])))
         return 0
     if args.cmd == "report":
         render_report(Path(args.dir))

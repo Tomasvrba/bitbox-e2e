@@ -24,6 +24,22 @@ Each run tests a change in one repo (`--repo`) while holding the other repos fix
 
 ## Test a change on GitHub
 
+### Trigger from a PR (checkboxes)
+
+Drop [ci/pr-caller.yml](ci/pr-caller.yml) into `.github/workflows/e2e.yml` in any target repo (setting `repo:` to `firmware`, `app`, `api-rs`, `api-go`, `api-ts`, or `rabby`) and add this checklist to the repo's PR template:
+
+```markdown
+### E2E tests
+- [x] `device` — device scenarios & API suites
+- [ ] `app` — BitBoxApp Playwright tests
+- [ ] `wc` — WalletConnect dapp flow
+- [ ] `rabby` — Rabby extension flow
+```
+
+When a maintainer adds the `run-e2e` label, the caller invokes `.github/workflows/pr.yml` via `workflow_call` for only the checked flows (or all default flows if no e2e checklist is present), posts/updates `summary.md` + the `e2e-report` link as a PR comment, and removes the `run-e2e` label.
+
+### Manual run
+
 1. Open **Actions -> change -> Run workflow** (`.github/workflows/pr.yml`).
 2. Set **Repo** and **Head** (plus **Fork holding head** as `owner/repo` for fork PRs).
 3. Optional fields: **Base** (defaults to upstream default branch), **Pins** (`repo=ref` pairs), **Graphical** (scenario globs for screenshots), **Tests** (BitBoxApp Playwright files), **Flows** (subset of flows).

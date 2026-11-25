@@ -118,6 +118,45 @@ def slug(unit_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", unit_id.replace("/", "--"))
 
 
+_CHECKBOX_RE = re.compile(r"^\s*[-*]\s*\[([ xX])\]\s*`?([a-zA-Z0-9_-]+)`?(?:\s|$|[:—–-])")
+
+
+def parse_pr_checkboxes(body: str | None, repo: str) -> list[str]:
+    """Parse checked e2e flow checkboxes from a PR description for `repo`.
+
+    - Ignores lines inside HTML comments (`<!-- ... -->`) and fenced code blocks.
+    - Recognizes `- [x] device` / `* [X] `wc` — ...` for flows valid in `FLOWS[repo]`.
+    - If at least one valid flow checkbox appears (checked or unchecked), returns only the checked
+      ones in canonical order (may be empty if all were left unchecked).
+    - If no valid flow checkbox appears in `body`, falls back to all default flows `FLOWS[repo]`.
+    """
+    valid = FLOWS[repo]
+    if not body:
+        return list(valid)
+    cleaned = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL)
+    in_fence = False
+    found_any = False
+    checked: set[str] = set()
+    for line in cleaned.splitlines():
+        if re.match(r"^\s*```", line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _CHECKBOX_RE.match(line)
+        if not m:
+            continue
+        flow = m.group(2).lower()
+        if flow not in valid:
+            continue
+        found_any = True
+        if m.group(1).lower() == "x":
+            checked.add(flow)
+    if not found_any:
+        return list(valid)
+    return [f for f in valid if f in checked]
+
+
 # --- git / repo helpers ---------------------------------------------------------------------------
 
 
