@@ -59,7 +59,11 @@ def ensure_rabby(ref: str, api_ts: str | None = None) -> Path:
     # and yarn.lock.
     subprocess.run(["git", "-C", str(src), "checkout", "-q", "-f", "--detach", sha], check=True)
     shutil.rmtree(src / "dist", ignore_errors=True)
+    shutil.rmtree(src / "node_modules" / ".cache", ignore_errors=True)
     env = dict(os.environ)
+    # Cap Node's V8 heap so Rabby's webpack build doesn't OOM-kill 16 GB CI runners.
+    if "--max-old-space-size" not in env.get("NODE_OPTIONS", ""):
+        env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + " --max-old-space-size=5120").strip()
     if ts_sha:
         pkg = api_ts_package(ts_sha)
         manifest = json.loads((src / "package.json").read_text())

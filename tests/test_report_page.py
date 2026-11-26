@@ -286,3 +286,19 @@ def test_cli_report_accepts_base_url(tmp_path):
     md = (tmp_path / "summary.md").read_text()
     assert "https://example.test/runs/9/report.html" in md
     assert "https://example.test/runs/9/device/head/s.png" in md
+
+
+def test_screen_changes_without_regressions_render_amber_warning(tmp_path):
+    render_flow(
+        tmp_path / "device",
+        Findings(
+            title="api-rs PR",
+            changes=[ScreenChange(title="Changed confirm screen", where=["eth-matrix/10-eip1559"])],
+        ),
+    )
+    render_run(tmp_path)
+    page = (tmp_path / "report.html").read_text()
+    md = (tmp_path / "summary.md").read_text()
+    assert 'class="hero warn"' in page
+    assert "### ⚠️ Review 1 screen change · nothing broke" in md
+    assert "✅" not in md.splitlines()[0]

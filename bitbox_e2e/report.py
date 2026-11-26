@@ -427,18 +427,18 @@ def _rebase_change(c: ScreenChange, flow: str, prefix_title: str | None = None) 
 
 
 def headline(f: Findings) -> tuple[str, str]:
-    top = (
-        f"Broke {plural(len(f.broke), 'test')}"
-        if f.broke
-        else f"Incomplete: {' and '.join(f.incomplete)} could not run"
-        if f.incomplete
-        else "Nothing broke"
-    )
-    sub = (
-        f"{plural(len(f.changes), 'screen change')} to review"
-        if f.changes
-        else "no device screen changed"
-    )
+    if f.broke:
+        top = f"Broke {plural(len(f.broke), 'test')}"
+        sub = f"{plural(len(f.changes), 'screen change')} to review" if f.changes else "no device screen changed"
+    elif f.incomplete:
+        top = f"Incomplete: {' and '.join(f.incomplete)} could not run"
+        sub = f"{plural(len(f.changes), 'screen change')} to review" if f.changes else "no device screen changed"
+    elif f.changes:
+        top = f"Review {plural(len(f.changes), 'screen change')}"
+        sub = "nothing broke"
+    else:
+        top = "Nothing broke"
+        sub = "no device screen changed"
     return top, sub
 
 
@@ -696,7 +696,7 @@ def _render_page(
 
     f = replace(findings, changes=merge_similar(findings.changes))
     top, sub = headline(f)
-    banner = "fail" if f.broke else "warn" if f.incomplete else "pass"
+    banner = "fail" if f.broke else "warn" if (f.incomplete or f.changes) else "pass"
     h = [
         "<main><header>",
         f'<div class="eyebrow">BitBox e2e · {t(f.repo or "report")}</div>',
@@ -1024,7 +1024,7 @@ def summary(
 
     f_merged = replace(f, changes=merge_similar(f.changes))
     top, sub = headline(f_merged)
-    icon = "❌" if f_merged.broke else "⚠️" if f_merged.incomplete else "✅"
+    icon = "❌" if f_merged.broke else "⚠️" if (f_merged.incomplete or f_merged.changes) else "✅"
     lines = [f"### {icon} {top} · {sub}", ""]
     if base:
         lines += [f"**[Open full HTML report]({base}/report.html)**", ""]

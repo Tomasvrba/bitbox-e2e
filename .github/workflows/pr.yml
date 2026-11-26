@@ -207,6 +207,16 @@ jobs:
           path: ~/.local/share/bitbox-e2e/tools
           key: tools-${{ runner.os }}-${{ hashFiles('e2e/setup.sh') }}
 
+      # Cache built Rabby extension dists so firmware PRs don't re-run webpack for 10 min.
+      - if: matrix.flow == 'rabby'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/bitbox-e2e/rabby-dist
+          key: rabby-dist-${{ runner.os }}-${{ inputs.repo }}-${{ inputs.head }}
+          restore-keys: |
+            rabby-dist-${{ runner.os }}-firmware-
+            rabby-dist-${{ runner.os }}-
+
       - name: e2e pr
         env:
           REPO: ${{ inputs.repo }}
