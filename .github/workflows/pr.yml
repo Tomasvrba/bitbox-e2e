@@ -261,6 +261,7 @@ jobs:
         with:
           pattern: e2e-flow-*
           path: ${{ runner.temp }}/flows
+          merge-multiple: true
       - id: render
         name: e2e report and publish
         env:
@@ -283,7 +284,8 @@ jobs:
           else
             uv sync --frozen --project e2e --no-dev
             for flow in $(python3 -c 'import json, sys; print(" ".join(json.loads(sys.argv[1])))' "$FLOWS"); do
-              part="$RUNNER_TEMP/flows/e2e-flow-$flow/$flow"
+              part="$RUNNER_TEMP/flows/$flow"
+              [ -d "$part" ] || part="$RUNNER_TEMP/flows/e2e-flow-$flow/$flow"
               mkdir -p "$out/$flow"
               if [ -f "$part/findings.json" ] || [ -f "$part/flow-error.json" ]; then
                 cp -r "$part/." "$out/$flow/"

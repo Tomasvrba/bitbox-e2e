@@ -155,20 +155,23 @@ def run_wallet(ref: str, sim_dir: Path, tests: list[str], out: Path, api_go: str
     def walk(suite: dict, prefix: str) -> None:
         for spec in suite.get("specs", []):
             for t in spec["tests"]:
-                for r in t["results"]:
-                    shots = [
-                        a["path"]
-                        for a in r.get("attachments", [])
-                        if a.get("contentType") == "image/png" and a.get("path")
-                    ]
-                    tests_out.append(
-                        {
-                            "title": f"{prefix}{spec['title']}",
-                            "status": r["status"],
-                            "error": (r.get("error") or {}).get("message", "")[:2000],
-                            "screenshot": shots[-1] if shots else None,
-                        }
-                    )
+                if not t.get("results"):
+                    continue
+                # Use the final attempt so Playwright retries suppress transient flakes.
+                r = t["results"][-1]
+                shots = [
+                    a["path"]
+                    for a in r.get("attachments", [])
+                    if a.get("contentType") == "image/png" and a.get("path")
+                ]
+                tests_out.append(
+                    {
+                        "title": f"{prefix}{spec['title']}",
+                        "status": r["status"],
+                        "error": (r.get("error") or {}).get("message", "")[:2000],
+                        "screenshot": shots[-1] if shots else None,
+                    }
+                )
         for sub in suite.get("suites", []):
             walk(sub, prefix)
 

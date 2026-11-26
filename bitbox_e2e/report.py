@@ -930,7 +930,7 @@ def render_run(out_dir: Path, base_url: str | None = None) -> Path:
             f"{name}: {sub.scope or 'see its report'}. Result: {top}, {rest}. Its own report: {flow}/report.html"
         )
         if sub_merged.broke:
-            st, badge = "fail", f"{plural(len(sub_merged.broke), 'broke')}"
+            st, badge = "fail", plural(len(sub_merged.broke), "regression")
             detail = sub_merged.broke[0].title
         elif sub_merged.changes:
             st, badge = "changed", plural(len(sub_merged.changes), "screen change")
